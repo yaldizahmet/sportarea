@@ -244,6 +244,32 @@ app.post('/api/matches/:id/divide', async (req, res) => {
   }
 });
 
+app.get('/api/users/:id/stats', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const matchesCount = await db.get('SELECT COUNT(*) as count FROM MatchPlayers WHERE userId = ?', [id]);
+    const numMatches = matchesCount ? matchesCount.count : 0;
+    
+    const idNum = parseInt(id.slice(-4)) || Math.floor(Math.random() * 100);
+    const mockGoals = (idNum % 5) * numMatches + (idNum % 3);
+    const mockScore = mockGoals * 3 + numMatches * 5 + 40;
+    
+    res.json({
+        matches: numMatches,
+        score: mockScore, 
+        goals: mockGoals,
+        skills: {
+            speed: Math.min(99, 60 + (idNum % 30) + (numMatches * 2)),
+            shoot: Math.min(99, 50 + (idNum % 40) + mockGoals),
+            pass: Math.min(99, 65 + (idNum % 25) + numMatches),
+            physique: Math.min(99, 55 + (idNum % 35))
+        }
+    });
+  } catch (error) {
+    res.status(500).json({ error: 'İstatistikler getirilemedi.' });
+  }
+});
+
 const PORT = 3000;
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`Server is running on http://localhost:${PORT}`);
