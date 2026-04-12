@@ -1,0 +1,15 @@
+C:\Users\user\Documents\sporarea\server\node_modules\@prisma\client\src\runtime\utils\validatePrismaClientOptions.ts:229
+    throw new PrismaClientConstructorValidationError(
+          ^
+PrismaClientConstructorValidationError: Using engine type "client" requires either "adapter" or "accelerateUrl" to be provided to PrismaClient constructor.
+Read more at https://pris.ly/d/client-constructor
+    at validateDependentOptions (C:\Users\user\Documents\sporarea\server\node_modules\@prisma\client\src\runtime\utils\validatePrismaClientOptions.ts:229:11)
+    at validatePrismaClientOptions (C:\Users\user\Documents\sporarea\server\node_modules\@prisma\client\src\runtime\utils\validatePrismaClientOptions.ts:246:3)
+    at new t (C:\Users\user\Documents\sporarea\server\node_modules\@prisma\client\src\runtime\getPrismaClient.ts:342:7)
+    at Object.<anonymous> (C:\Users\user\Documents\sporarea\server\index.ts:7:16)
+    at Module._compile (node:internal/modules/cjs/loader:1812:14)
+    at Module.m._compile (C:\Users\user\Documents\sporarea\server\node_modules\ts-node\src\index.ts:1618:23)
+    at node:internal/modules/cjs/loader:1943:10
+    at Object.require.extensions.<computed> [as .ts] (C:\Users\user\Documents\sporarea\server\node_modules\ts-node\src\index.ts:1621:12)
+    at Module.load (node:internal/modules/cjs/loader:1533:32)
+    at Module._load (node:internal/modules/cjs/loader:1335:12)

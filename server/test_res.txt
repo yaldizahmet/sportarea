@@ -1,0 +1,3 @@
+p1 failed: `PrismaClient` needs to be constructed with a non-empty, valid `PrismaClientOptions`:
+p2 failed: Unknown property datasources provided to PrismaClient constructor.
+p3 failed: Unknown property datasourceUrl provided to PrismaClient constructor.

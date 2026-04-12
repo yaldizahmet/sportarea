@@ -1,0 +1,70 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id              String            @id @default(uuid())
+  name            String
+  email           String?           @unique
+  phone           String?           @unique
+  password        String
+  role            String            @default("PLAYER") // "ORGANIZER" or "PLAYER"
+  createdAt       DateTime          @default(now())
+  organizedGroups Group[]           @relation("GroupOrganizer")
+  groups          GroupMember[]
+  attendances     MatchAttendance[]
+}
+
+model Group {
+  id          String        @id @default(uuid())
+  name        String
+  organizerId String
+  organizer   User          @relation("GroupOrganizer", fields: [organizerId], references: [id])
+  inviteCode  String        @unique
+  createdAt   DateTime      @default(now())
+  members     GroupMember[]
+  matches     Match[]
+}
+
+model GroupMember {
+  id       String   @id @default(uuid())
+  userId   String
+  groupId  String
+  user     User     @relation(fields: [userId], references: [id])
+  group    Group    @relation(fields: [groupId], references: [id])
+  joinedAt DateTime @default(now())
+
+  @@unique([userId, groupId])
+}
+
+model Match {
+  id         String            @id @default(uuid())
+  groupId    String
+  group      Group             @relation(fields: [groupId], references: [id])
+  date       DateTime
+  location   String
+  maxPlayers Int               @default(14)
+  status     String            @default("OPEN") // "OPEN", "FULL", "COMPLETED", "CANCELLED"
+  createdAt  DateTime          @default(now())
+  attendees  MatchAttendance[]
+}
+
+model MatchAttendance {
+  id        String   @id @default(uuid())
+  matchId   String
+  userId    String
+  user      User     @relation(fields: [userId], references: [id])
+  match     Match    @relation(fields: [matchId], references: [id])
+  status    String   @default("GOING") // "GOING", "NOT_GOING", "WAITLIST"
+  updatedAt DateTime @updatedAt
+
+  @@unique([matchId, userId])
+}

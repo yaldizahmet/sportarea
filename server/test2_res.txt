@@ -1,0 +1,3 @@
+p4 failed: Unknown property datasource provided to PrismaClient constructor.
+p5 failed: Unknown property db provided to PrismaClient constructor.
+p6 failed: Unknown property url provided to PrismaClient constructor.
