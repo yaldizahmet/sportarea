@@ -149,6 +149,22 @@ app.post('/api/groups/join', async (req, res) => {
   }
 });
 
+app.get('/api/groups/:id/members', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const members = await db.all(`
+      SELECT User.id, User.name, 
+             (SELECT COUNT(*) FROM MatchPlayers WHERE MatchPlayers.userId = User.id) as matches
+      FROM GroupMembers
+      JOIN User ON GroupMembers.userId = User.id
+      WHERE GroupMembers.groupId = ?
+    `, [id]);
+    res.json(members);
+  } catch (error) {
+    res.status(500).json({ error: 'Grup üyeleri getirilirken hata oluştu.' });
+  }
+});
+
 // MATCHES API
 app.get('/api/matches', async (req, res) => {
   try {
