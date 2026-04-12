@@ -216,6 +216,34 @@ app.post('/api/matches/:id/leave', async (req, res) => {
   }
 });
 
+app.post('/api/matches/:id/divide', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const players = await db.all('SELECT * FROM MatchPlayers WHERE matchId = ?', [id]);
+    
+    if (players.length < 2) {
+      return res.status(400).json({ error: 'Takım bölmek için yeterli oyuncu yok.' });
+    }
+
+    const shuffled = players.sort(() => 0.5 - Math.random());
+    const mid = Math.ceil(shuffled.length / 2);
+    const teamA = shuffled.slice(0, mid);
+    const teamB = shuffled.slice(mid);
+
+    for (const p of teamA) {
+      await db.run('UPDATE MatchPlayers SET team = ? WHERE matchId = ? AND userId = ?', ['A', id, p.userId]);
+    }
+    for (const p of teamB) {
+      await db.run('UPDATE MatchPlayers SET team = ? WHERE matchId = ? AND userId = ?', ['B', id, p.userId]);
+    }
+
+    res.json({ message: 'Takımlar başarıyla oluşturuldu!' });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: 'Takımları bölerken hata oluştu.' });
+  }
+});
+
 const PORT = 3000;
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`Server is running on http://localhost:${PORT}`);
