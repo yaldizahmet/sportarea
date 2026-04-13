@@ -4,6 +4,9 @@ import cors from 'cors';
 import sqlite3 from 'sqlite3';
 import { open } from 'sqlite';
 import path from 'path';
+import jwt from 'jsonwebtoken';
+
+const JWT_SECRET = process.env.JWT_SECRET || 'super-secret-key-sporarea-2026';
 
 const app = express();
 app.use(cors());
@@ -85,7 +88,9 @@ app.post('/api/register', async (req, res) => {
     await db.run('INSERT INTO User (id, name, email, password, role) VALUES (?, ?, ?, ?, ?)', [id, name, email, password, 'ORGANIZER']);
     
     const user = { id, name, email, role: 'ORGANIZER' };
-    res.json({ message: 'Kayıt başarılı!', user });
+    const token = jwt.sign({ id }, JWT_SECRET, { expiresIn: '30d' });
+    
+    res.json({ message: 'Kayıt başarılı!', user, token });
   } catch (error) {
     console.error("Register Error:", error);
     res.status(500).json({ error: 'Kayıt olurken bir hata oluştu.' });
@@ -104,10 +109,28 @@ app.post('/api/login', async (req, res) => {
       return res.status(401).json({ error: 'E-posta veya şifre hatalı.' });
     }
 
-    res.json({ message: 'Giriş başarılı!', user });
+    const token = jwt.sign({ id: user.id }, JWT_SECRET, { expiresIn: '30d' });
+
+    res.json({ message: 'Giriş başarılı!', user, token });
   } catch (error) {
     console.error("Login Error:", error);
     res.status(500).json({ error: 'Giriş yaparken bir hata oluştu.' });
+  }
+});
+
+app.get('/api/me', async (req, res) => {
+  try {
+    const token = req.headers.authorization?.split(' ')[1];
+    if (!token) return res.status(401).json({ error: 'Yetkisiz erişim.' });
+    
+    const decoded: any = jwt.verify(token, JWT_SECRET);
+    const user = await db.get('SELECT * FROM User WHERE id = ?', [decoded.id]);
+    
+    if (!user) return res.status(404).json({ error: 'Kullanıcı bulunamadı.' });
+    
+    res.json({ user });
+  } catch (err) {
+    res.status(401).json({ error: 'Geçersiz token.' });
   }
 });
 
