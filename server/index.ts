@@ -137,6 +137,15 @@ app.get('/api/me', async (req, res) => {
 // GROUPS API
 app.get('/api/groups', async (req, res) => {
   try {
+    const { userId } = req.query;
+    if (userId) {
+      const groups = await db.all(`
+        SELECT Groups.* FROM Groups 
+        JOIN GroupMembers ON Groups.id = GroupMembers.groupId 
+        WHERE GroupMembers.userId = ?
+      `, [userId]);
+      return res.json(groups);
+    }
     const groups = await db.all('SELECT * FROM Groups');
     res.json(groups);
   } catch (error) {
