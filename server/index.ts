@@ -97,6 +97,10 @@ let db: any;
     try {
       await db.exec(`ALTER TABLE Matches ADD COLUMN status TEXT DEFAULT 'OPEN';`);
     } catch (e) {}
+
+    try {
+      await db.exec(`ALTER TABLE Matches ADD COLUMN score TEXT;`);
+    } catch (e) {}
     
     console.log('Database connected and schemas initialized.');
 })();
@@ -427,7 +431,8 @@ app.post('/api/matches/:id/rate', async (req, res) => {
 app.post('/api/matches/:id/finish', async (req, res) => {
    try {
      const { id } = req.params;
-     await db.run('UPDATE Matches SET status = "COMPLETED" WHERE id = ?', [id]);
+     const { score } = req.body || {};
+     await db.run('UPDATE Matches SET status = "COMPLETED", score = ? WHERE id = ?', [score || null, id]);
      res.json({ message: 'Maç tamamlandı olarak işaretlendi!' });
    } catch (error) {
      res.status(500).json({ error: 'Hata' });
