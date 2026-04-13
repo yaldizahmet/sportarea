@@ -105,6 +105,11 @@ let db: any;
     try {
       await db.exec(`ALTER TABLE MatchPlayers ADD COLUMN goals INTEGER DEFAULT 0;`);
     } catch (e) {}
+
+    try {
+      await db.exec(`ALTER TABLE Matches ADD COLUMN teamAName TEXT DEFAULT 'A Takımı';`);
+      await db.exec(`ALTER TABLE Matches ADD COLUMN teamBName TEXT DEFAULT 'B Takımı';`);
+    } catch (e) {}
     
     console.log('Database connected and schemas initialized.');
 })();
@@ -281,12 +286,12 @@ app.get('/api/matches', async (req, res) => {
 
 app.post('/api/matches', async (req, res) => {
   try {
-    const { groupId, creatorId, date, time, location, maxPlayers } = req.body;
+    const { groupId, creatorId, date, time, location, maxPlayers, teamAName, teamBName } = req.body;
     const id = Date.now().toString();
     
     await db.run(
-      'INSERT INTO Matches (id, groupId, creatorId, date, time, location, maxPlayers) VALUES (?, ?, ?, ?, ?, ?, ?)', 
-      [id, groupId || null, creatorId, date, time, location, maxPlayers]
+      'INSERT INTO Matches (id, groupId, creatorId, date, time, location, maxPlayers, teamAName, teamBName) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)', 
+      [id, groupId || null, creatorId, date, time, location, maxPlayers, teamAName || 'A Takımı', teamBName || 'B Takımı']
     );
 
     if (creatorId) {
