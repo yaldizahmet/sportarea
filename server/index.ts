@@ -101,6 +101,10 @@ let db: any;
     try {
       await db.exec(`ALTER TABLE Matches ADD COLUMN score TEXT;`);
     } catch (e) {}
+
+    try {
+      await db.exec(`ALTER TABLE MatchPlayers ADD COLUMN goals INTEGER DEFAULT 0;`);
+    } catch (e) {}
     
     console.log('Database connected and schemas initialized.');
 })();
@@ -296,16 +300,16 @@ app.post('/api/matches', async (req, res) => {
 });
 
 app.get('/api/matches/:id/players', async (req, res) => {
-  try {
-    const { id } = req.params;
-    const players = await db.all(`
-      SELECT User.id, User.name, User.role as position, MatchPlayers.team, MatchPlayers.joinedAt 
-      FROM MatchPlayers 
-      JOIN User ON MatchPlayers.userId = User.id 
-      WHERE MatchPlayers.matchId = ?
-    `, [id]);
-    res.json(players);
-  } catch (error) {
+   try {
+     const { id } = req.params;
+     const players = await db.all(`
+       SELECT User.id, User.name, User.avatar, User.role as position, MatchPlayers.team, MatchPlayers.goals 
+       FROM MatchPlayers 
+       JOIN User ON MatchPlayers.userId = User.id 
+       WHERE MatchPlayers.matchId = ?
+     `, [id]);
+     res.json(players);
+   } catch (error) {
     res.status(500).json({ error: 'Oyuncular getirilirken hata oluştu.' });
   }
 });
@@ -431,8 +435,17 @@ app.post('/api/matches/:id/rate', async (req, res) => {
 app.post('/api/matches/:id/finish', async (req, res) => {
    try {
      const { id } = req.params;
-     const { score } = req.body || {};
+     const { score, scorers } = req.body || {};
      await db.run('UPDATE Matches SET status = "COMPLETED", score = ? WHERE id = ?', [score || null, id]);
+     
+     if (Array.isArray(scorers)) {
+        for (const s of scorers) {
+           if (s.goals > 0) {
+              await db.run('UPDATE MatchPlayers SET goals = ? WHERE matchId = ? AND userId = ?', [s.goals, id, s.userId]);
+           }
+        }
+     }
+
      res.json({ message: 'Maç tamamlandı olarak işaretlendi!' });
    } catch (error) {
      res.status(500).json({ error: 'Hata' });
