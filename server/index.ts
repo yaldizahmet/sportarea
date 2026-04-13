@@ -57,15 +57,23 @@ let db: any;
       createdAt DATETIME DEFAULT CURRENT_TIMESTAMP
     );
 
-    CREATE TABLE IF NOT EXISTS MatchPlayers (
-      matchId TEXT,
-      userId TEXT,
-      team TEXT DEFAULT 'UNASSIGNED', 
-      joinedAt DATETIME DEFAULT CURRENT_TIMESTAMP,
-      PRIMARY KEY (matchId, userId)
-    );
-  `);
-  console.log('Database connected and schemas initialized.');
+      CREATE TABLE IF NOT EXISTS MatchPlayers (
+        matchId TEXT,
+        userId TEXT,
+        team TEXT DEFAULT 'UNASSIGNED', 
+        joinedAt DATETIME DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (matchId, userId)
+      );
+    `);
+    
+    // Add avatar column safely if it doesn't exist
+    try {
+      await db.exec(`ALTER TABLE User ADD COLUMN avatar TEXT;`);
+    } catch (e) {
+      // Column might already exist, ignore
+    }
+    
+    console.log('Database connected and schemas initialized.');
 })();
 
 app.get('/', (req, res) => {
@@ -197,9 +205,29 @@ app.get('/api/groups/:id/members', async (req, res) => {
   }
 });
 
+app.post('/api/users/:id/avatar', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { avatar } = req.body;
+    await db.run('UPDATE User SET avatar = ? WHERE id = ?', [avatar, id]);
+    res.json({ message: 'Avatar başarıyla güncellendi!' });
+  } catch (error) {
+    res.status(500).json({ error: 'Avatar güncellenirken hata oluştu.' });
+  }
+});
+
 // MATCHES API
 app.get('/api/matches', async (req, res) => {
   try {
+    const { userId } = req.query;
+    if (userId) {
+      const matches = await db.all(`
+        SELECT Matches.* FROM Matches 
+        JOIN MatchPlayers ON Matches.id = MatchPlayers.matchId 
+        WHERE MatchPlayers.userId = ?
+      `, [userId]);
+      return res.json(matches);
+    }
     const matches = await db.all('SELECT * FROM Matches');
     res.json(matches);
   } catch (error) {
