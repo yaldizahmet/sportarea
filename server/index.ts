@@ -64,14 +64,35 @@ let db: any;
         joinedAt DATETIME DEFAULT CURRENT_TIMESTAMP,
         PRIMARY KEY (matchId, userId)
       );
+
+      CREATE TABLE IF NOT EXISTS MatchMessages (
+        id TEXT PRIMARY KEY,
+        matchId TEXT,
+        userId TEXT,
+        message TEXT,
+        createdAt DATETIME DEFAULT CURRENT_TIMESTAMP
+      );
+
+      CREATE TABLE IF NOT EXISTS Ratings (
+        id TEXT PRIMARY KEY,
+        matchId TEXT,
+        raterId TEXT,
+        ratedId TEXT,
+        speed INTEGER,
+        shoot INTEGER,
+        pass INTEGER,
+        physique INTEGER,
+        createdAt DATETIME DEFAULT CURRENT_TIMESTAMP
+      );
     `);
     
-    // Add avatar column safely if it doesn't exist
     try {
       await db.exec(`ALTER TABLE User ADD COLUMN avatar TEXT;`);
-    } catch (e) {
-      // Column might already exist, ignore
-    }
+    } catch (e) {}
+
+    try {
+      await db.exec(`ALTER TABLE User ADD COLUMN position TEXT DEFAULT 'Orta Saha';`);
+    } catch (e) {}
     
     console.log('Database connected and schemas initialized.');
 })();
@@ -216,6 +237,17 @@ app.post('/api/users/:id/avatar', async (req, res) => {
   }
 });
 
+app.post('/api/users/:id/position', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { position } = req.body;
+    await db.run('UPDATE User SET position = ? WHERE id = ?', [position, id]);
+    res.json({ message: 'Mevki güncellendi!' });
+  } catch (error) {
+    res.status(500).json({ error: 'Mevki güncellenirken hata oluştu.' });
+  }
+});
+
 // MATCHES API
 app.get('/api/matches', async (req, res) => {
   try {
@@ -295,29 +327,107 @@ app.post('/api/matches/:id/leave', async (req, res) => {
 app.post('/api/matches/:id/divide', async (req, res) => {
   try {
     const { id } = req.params;
-    const players = await db.all('SELECT * FROM MatchPlayers WHERE matchId = ?', [id]);
+    const players = await db.all(`
+      SELECT User.id, User.position
+      FROM MatchPlayers 
+      JOIN User ON MatchPlayers.userId = User.id 
+      WHERE MatchPlayers.matchId = ?
+    `, [id]);
+
+    if(players.length < 2) return res.status(400).json({ error: 'Takım kurmak için yeterli oyuncu yok.' });
+
+    // Mevkilere göre ayır
+    const goalkeepers = players.filter((p: any) => (p.position || '').toLowerCase().includes('kaleci'));
+    const others = players.filter((p: any) => !(p.position || '').toLowerCase().includes('kaleci'));
+
+    // Grupları rastgele karıştır
+    goalkeepers.sort(() => 0.5 - Math.random());
+    others.sort(() => 0.5 - Math.random());
+
+    const teamA: any[] = [];
+    const teamB: any[] = [];
+
+    // Önce kalecileri eşit dağıt
+    goalkeepers.forEach((p: any, idx: number) => {
+      if (idx % 2 === 0) teamA.push(p);
+      else teamB.push(p);
+    });
+
+    // Sonra diğerlerini kalan boşluklara göre dağıt
+    others.forEach((p: any) => {
+      if (teamA.length <= teamB.length) teamA.push(p);
+      else teamB.push(p);
+    });
+
+    await db.run('UPDATE MatchPlayers SET team = "UNASSIGNED" WHERE matchId = ?', [id]);
     
-    if (players.length < 2) {
-      return res.status(400).json({ error: 'Takım bölmek için yeterli oyuncu yok.' });
-    }
+    for (const p of teamA) await db.run('UPDATE MatchPlayers SET team = "A" WHERE matchId = ? AND userId = ?', [id, p.id]);
+    for (const p of teamB) await db.run('UPDATE MatchPlayers SET team = "B" WHERE matchId = ? AND userId = ?', [id, p.id]);
 
-    const shuffled = players.sort(() => 0.5 - Math.random());
-    const mid = Math.ceil(shuffled.length / 2);
-    const teamA = shuffled.slice(0, mid);
-    const teamB = shuffled.slice(mid);
-
-    for (const p of teamA) {
-      await db.run('UPDATE MatchPlayers SET team = ? WHERE matchId = ? AND userId = ?', ['A', id, p.userId]);
-    }
-    for (const p of teamB) {
-      await db.run('UPDATE MatchPlayers SET team = ? WHERE matchId = ? AND userId = ?', ['B', id, p.userId]);
-    }
-
-    res.json({ message: 'Takımlar başarıyla oluşturuldu!' });
+    res.json({ message: 'Takımlar mevkilere göre dengeli şekilde dağıtıldı!' });
   } catch (error) {
-    console.error(error);
-    res.status(500).json({ error: 'Takımları bölerken hata oluştu.' });
+    res.status(500).json({ error: 'Bölme hatası' });
   }
+});
+
+// CHAT API
+app.get('/api/matches/:id/messages', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const messages = await db.all(`
+      SELECT MatchMessages.id, MatchMessages.message, MatchMessages.createdAt, User.name, User.avatar
+      FROM MatchMessages
+      JOIN User ON MatchMessages.userId = User.id
+      WHERE MatchMessages.matchId = ?
+      ORDER BY MatchMessages.createdAt ASC
+    `, [id]);
+    res.json(messages);
+  } catch (error) {
+    res.status(500).json({ error: 'Mesajlar alınamadı.' });
+  }
+});
+
+app.post('/api/matches/:id/messages', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { userId, message } = req.body;
+    const msgId = Date.now().toString();
+    await db.run('INSERT INTO MatchMessages (id, matchId, userId, message) VALUES (?, ?, ?, ?)', [msgId, id, userId, message]);
+    res.json({ message: 'Mesaj gönderildi' });
+  } catch (error) {
+    res.status(500).json({ error: 'Mesaj gönderilemedi.' });
+  }
+});
+
+// RATINGS API
+app.post('/api/matches/:id/rate', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { raterId, ratedId, speed, shoot, pass, physique } = req.body;
+    
+    // Prevent self-rating just in case
+    if(raterId === ratedId) return res.status(400).json({ error: 'Kendinizi puanlayamazsınız.' });
+
+    const ratingId = Date.now().toString();
+    await db.run(`
+      INSERT INTO Ratings (id, matchId, raterId, ratedId, speed, shoot, pass, physique)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `, [ratingId, id, raterId, ratedId, speed, shoot, pass, physique]);
+
+    res.json({ message: 'Puan basariyla kaydedildi!' });
+  } catch (error) {
+    res.status(500).json({ error: 'Puan kaydedilirken hata.' });
+  }
+});
+
+app.post('/api/matches/:id/finish', async (req, res) => {
+   try {
+     const { id } = req.params;
+     await db.run('UPDATE Matches SET status = "COMPLETED" WHERE id = ?', [id]);
+     res.json({ message: 'Maç tamamlandı olarak işaretlendi!' });
+   } catch (error) {
+     res.status(500).json({ error: 'Hata' });
+   }
 });
 
 app.get('/api/users/:id/stats', async (req, res) => {
@@ -325,6 +435,20 @@ app.get('/api/users/:id/stats', async (req, res) => {
     const { id } = req.params;
     const matchesCount = await db.get('SELECT COUNT(*) as count FROM MatchPlayers WHERE userId = ?', [id]);
     const numMatches = matchesCount ? matchesCount.count : 0;
+    
+    // Fetch average ratings from the database!
+    const ratings = await db.get(`
+      SELECT 
+        AVG(speed) as avgSpeed, 
+        AVG(shoot) as avgShoot, 
+        AVG(pass) as avgPass, 
+        AVG(physique) as avgPhysique,
+        COUNT(*) as ratingCount
+      FROM Ratings WHERE ratedId = ?
+    `, [id]);
+
+    // Initial defaults if nobody has rated this player yet
+    const hasRatings = ratings && ratings.ratingCount > 0;
     
     const idNum = parseInt(id.slice(-4)) || Math.floor(Math.random() * 100);
     const mockGoals = (idNum % 5) * numMatches + (idNum % 3);
@@ -335,10 +459,10 @@ app.get('/api/users/:id/stats', async (req, res) => {
         score: mockScore, 
         goals: mockGoals,
         skills: {
-            speed: Math.min(99, 60 + (idNum % 30) + (numMatches * 2)),
-            shoot: Math.min(99, 50 + (idNum % 40) + mockGoals),
-            pass: Math.min(99, 65 + (idNum % 25) + numMatches),
-            physique: Math.min(99, 55 + (idNum % 35))
+            speed: hasRatings ? Math.round(ratings.avgSpeed) : 60,
+            shoot: hasRatings ? Math.round(ratings.avgShoot) : 60,
+            pass: hasRatings ? Math.round(ratings.avgPass) : 60,
+            physique: hasRatings ? Math.round(ratings.avgPhysique) : 60
         }
     });
   } catch (error) {
