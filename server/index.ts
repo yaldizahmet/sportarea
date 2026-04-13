@@ -93,6 +93,10 @@ let db: any;
     try {
       await db.exec(`ALTER TABLE User ADD COLUMN position TEXT DEFAULT 'Orta Saha';`);
     } catch (e) {}
+
+    try {
+      await db.exec(`ALTER TABLE Matches ADD COLUMN status TEXT DEFAULT 'OPEN';`);
+    } catch (e) {}
     
     console.log('Database connected and schemas initialized.');
 })();
