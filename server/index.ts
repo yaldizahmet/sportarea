@@ -111,6 +111,17 @@ let db: any;
       await db.exec(`ALTER TABLE Matches ADD COLUMN teamBName TEXT DEFAULT 'B Takımı';`);
     } catch (e) {}
     
+    await db.exec(`
+      CREATE TABLE IF NOT EXISTS Notifications (
+        id TEXT PRIMARY KEY,
+        userId TEXT NOT NULL,
+        message TEXT NOT NULL,
+        type TEXT DEFAULT 'INFO',
+        isRead BOOLEAN DEFAULT 0,
+        createdAt DATETIME DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+
     console.log('Database connected and schemas initialized.');
 })();
 
@@ -265,6 +276,28 @@ app.post('/api/users/:id/position', async (req, res) => {
   }
 });
 
+// NOTIFICATIONS API
+app.get('/api/notifications', async (req, res) => {
+  try {
+    const { userId } = req.query;
+    if (!userId) return res.status(400).json({ error: 'User ID gerekli' });
+    const notifications = await db.all('SELECT * FROM Notifications WHERE userId = ? ORDER BY createdAt DESC LIMIT 20', [userId]);
+    res.json(notifications);
+  } catch (error) {
+    res.status(500).json({ error: 'Bildirimler getirilemedi' });
+  }
+});
+
+app.post('/api/notifications/read', async (req, res) => {
+  try {
+    const { userId } = req.body;
+    await db.run('UPDATE Notifications SET isRead = 1 WHERE userId = ?', [userId]);
+    res.json({ message: 'Tümü okundu' });
+  } catch (error) {
+    res.status(500).json({ error: 'Okundu işaretlenemedi' });
+  }
+});
+
 // MATCHES API
 app.get('/api/matches', async (req, res) => {
   try {
@@ -325,6 +358,17 @@ app.post('/api/matches/:id/join', async (req, res) => {
     const { userId } = req.body;
     await db.run('INSERT OR IGNORE INTO MatchPlayers (matchId, userId) VALUES (?, ?)', [id, userId]);
     res.json({ message: 'Maça katılım başarılı!' });
+    
+    // Maç sahibine veya gruba kurucuya bildirim
+    const matchRow = await db.get('SELECT creatorId, location FROM Matches WHERE id = ?', [id]);
+    if (matchRow && matchRow.creatorId && matchRow.creatorId !== userId) {
+       await db.run('INSERT INTO Notifications (id, userId, message, type) VALUES (?, ?, ?, ?)', [
+         Date.now().toString() + Math.random(),
+         matchRow.creatorId,
+         `Bir oyuncu ${matchRow.location} maçına katıldı! Kadroya göz at.`,
+         'JOIN'
+       ]);
+    }
   } catch (error) {
     res.status(500).json({ error: 'Maça katılırken hata oluştu.' });
   }
@@ -449,6 +493,13 @@ app.post('/api/matches/:id/finish', async (req, res) => {
               await db.run('UPDATE MatchPlayers SET goals = ? WHERE matchId = ? AND userId = ?', [s.goals, id, s.userId]);
            }
         }
+     }
+
+     // Bildirim at
+     const players = await db.all('SELECT userId FROM MatchPlayers WHERE matchId = ?', [id]);
+     const msg = `Oynadığınız maç tamamlandı. Skor: ${score}. Puanlama yapabilirsiniz!`;
+     for (const p of players) {
+        await db.run('INSERT INTO Notifications (id, userId, message, type) VALUES (?, ?, ?, "MATCH_RESULT")', [Date.now().toString() + Math.random(), p.userId, msg]);
      }
 
      res.json({ message: 'Maç tamamlandı olarak işaretlendi!' });
