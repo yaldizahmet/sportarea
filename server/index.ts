@@ -619,6 +619,38 @@ app.post('/api/matches/:id/divide', async (req, res) => {
   }
 });
 
+app.post('/api/matches/:id/finish', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { score, playerGoals } = req.body; // playerGoals: { [userId]: number }
+    
+    await db.run("UPDATE Matches SET status = 'COMPLETED', score = ? WHERE id = ?", [score, id]);
+    
+    if (playerGoals) {
+      for (const [userId, goals] of Object.entries(playerGoals)) {
+         if ((goals as number) > 0) {
+            await db.run("UPDATE MatchPlayers SET goals = ? WHERE matchId = ? AND userId = ?", [goals, id, userId]);
+         }
+      }
+    }
+    
+    const players = await db.all('SELECT userId FROM MatchPlayers WHERE matchId = ?', [id]);
+    const matchRow = await db.get('SELECT location FROM Matches WHERE id = ?', [id]);
+    for(const p of players) {
+       await db.run('INSERT INTO Notifications (id, userId, message, type) VALUES (?, ?, ?, ?)', [
+         Date.now().toString() + Math.random(),
+         p.userId,
+         `${matchRow?.location || 'Maç'} tamamlandı! İstatistiklerin işlendi. Hemen detaylara göz atabilir ve oyuncuları puanlayabilirsin.`,
+         'MATCH_RESULT'
+       ]);
+    }
+    
+    res.json({ message: 'Maç başarıyla tamamlandı.' });
+  } catch (error) {
+    res.status(500).json({ error: 'Maç bitirilirken hata oluştu.' });
+  }
+});
+
 // CHAT API
 app.get('/api/matches/:id/messages', async (req, res) => {
   try {
