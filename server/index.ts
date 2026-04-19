@@ -113,6 +113,11 @@ let db: any;
     try {
       await db.exec(`ALTER TABLE Notifications ADD COLUMN metadata TEXT;`);
     } catch (e) {}
+
+    try {
+      await db.exec(`ALTER TABLE Matches ADD COLUMN matchTimestamp INTEGER;`);
+      await db.exec(`ALTER TABLE Matches ADD COLUMN lockoutHours INTEGER DEFAULT 1;`);
+    } catch (e) {}
     
     try {
       await db.exec(`ALTER TABLE MatchPlayers ADD COLUMN status TEXT DEFAULT 'ACTIVE';`);
@@ -408,12 +413,12 @@ app.get('/api/matches', async (req, res) => {
 
 app.post('/api/matches', async (req, res) => {
   try {
-    const { groupId, creatorId, date, time, location, maxPlayers, teamAName, teamBName } = req.body;
+    const { groupId, creatorId, date, time, location, maxPlayers, teamAName, teamBName, matchTimestamp, lockoutHours } = req.body;
     const id = Date.now().toString();
     
     await db.run(
-      'INSERT INTO Matches (id, groupId, creatorId, date, time, location, maxPlayers, teamAName, teamBName) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)', 
-      [id, groupId || null, creatorId, date, time, location, maxPlayers, teamAName || 'A Takımı', teamBName || 'B Takımı']
+      'INSERT INTO Matches (id, groupId, creatorId, date, time, location, maxPlayers, teamAName, teamBName, matchTimestamp, lockoutHours) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', 
+      [id, groupId || null, creatorId, date, time, location, maxPlayers, teamAName || 'A Takımı', teamBName || 'B Takımı', matchTimestamp || 0, lockoutHours || 1]
     );
 
     if (creatorId) {
@@ -460,8 +465,15 @@ app.post('/api/matches/:id/join', async (req, res) => {
     const { id } = req.params;
     const { userId } = req.body;
     
-    const matchRow = await db.get('SELECT creatorId, location, maxPlayers FROM Matches WHERE id = ?', [id]);
+    const matchRow = await db.get('SELECT creatorId, location, maxPlayers, matchTimestamp, lockoutHours FROM Matches WHERE id = ?', [id]);
     if (!matchRow) return res.status(404).json({error: 'Maç bulunamadı'});
+
+    if (matchRow.matchTimestamp > 0 && matchRow.lockoutHours !== null) {
+       const lockoutMs = matchRow.lockoutHours * 60 * 60 * 1000;
+       if (Date.now() > (matchRow.matchTimestamp - lockoutMs)) {
+         return res.status(403).json({ error: `Bu maç için değişiklik süresi dolmuştur (Maça son ${matchRow.lockoutHours} saat kala kilitlendi).` });
+       }
+    }
 
     const activeCount = await db.get("SELECT COUNT(*) as c FROM MatchPlayers WHERE matchId = ? AND status = 'ACTIVE'", [id]);
     const isReserve = activeCount.c >= matchRow.maxPlayers;
@@ -490,6 +502,16 @@ app.post('/api/matches/:id/leave', async (req, res) => {
   try {
     const { id } = req.params;
     const { userId } = req.body;
+
+    const matchRow = await db.get('SELECT matchTimestamp, lockoutHours, location FROM Matches WHERE id = ?', [id]);
+    if (!matchRow) return res.status(404).json({error: 'Maç bulunamadı'});
+    
+    if (matchRow.matchTimestamp > 0 && matchRow.lockoutHours !== null) {
+       const lockoutMs = matchRow.lockoutHours * 60 * 60 * 1000;
+       if (Date.now() > (matchRow.matchTimestamp - lockoutMs)) {
+         return res.status(403).json({ error: `İptal süresi doldu! Maça son ${matchRow.lockoutHours} saat kala kadrodan çıkış yapılamaz.` });
+       }
+    }
     
     const leavingPlayer = await db.get('SELECT status FROM MatchPlayers WHERE matchId = ? AND userId = ?', [id, userId]);
     await db.run('DELETE FROM MatchPlayers WHERE matchId = ? AND userId = ?', [id, userId]);
@@ -499,7 +521,6 @@ app.post('/api/matches/:id/leave', async (req, res) => {
       if (firstReserve) {
          await db.run("UPDATE MatchPlayers SET status = 'ACTIVE' WHERE matchId = ? AND userId = ?", [id, firstReserve.userId]);
          
-         const matchRow = await db.get('SELECT location FROM Matches WHERE id = ?', [id]);
          await db.run('INSERT INTO Notifications (id, userId, message, type) VALUES (?, ?, ?, ?)', [
            Date.now().toString() + Math.random(),
            firstReserve.userId,
