@@ -114,6 +114,10 @@ let db: any;
       await db.exec(`ALTER TABLE Notifications ADD COLUMN metadata TEXT;`);
     } catch (e) {}
     
+    try {
+      await db.exec(`ALTER TABLE MatchPlayers ADD COLUMN status TEXT DEFAULT 'ACTIVE';`);
+    } catch (e) {}
+
     await db.exec(`
       CREATE TABLE IF NOT EXISTS Notifications (
         id TEXT PRIMARY KEY,
@@ -439,12 +443,12 @@ app.post('/api/matches', async (req, res) => {
 app.get('/api/matches/:id/players', async (req, res) => {
    try {
      const { id } = req.params;
-     const players = await db.all(`
-       SELECT User.id, User.name, User.avatar, User.role as position, MatchPlayers.team, MatchPlayers.goals 
-       FROM MatchPlayers 
-       JOIN User ON MatchPlayers.userId = User.id 
-       WHERE MatchPlayers.matchId = ?
-     `, [id]);
+      const players = await db.all(`
+        SELECT User.id, User.name, User.avatar, User.role as position, MatchPlayers.team, MatchPlayers.goals, MatchPlayers.status 
+        FROM MatchPlayers 
+        JOIN User ON MatchPlayers.userId = User.id 
+        WHERE MatchPlayers.matchId = ?
+      `, [id]);
      res.json(players);
    } catch (error) {
     res.status(500).json({ error: 'Oyuncular getirilirken hata oluştu.' });
@@ -455,19 +459,28 @@ app.post('/api/matches/:id/join', async (req, res) => {
   try {
     const { id } = req.params;
     const { userId } = req.body;
-    await db.run('INSERT OR IGNORE INTO MatchPlayers (matchId, userId) VALUES (?, ?)', [id, userId]);
-    res.json({ message: 'Maça katılım başarılı!' });
     
-    // Maç sahibine veya gruba kurucuya bildirim
-    const matchRow = await db.get('SELECT creatorId, location FROM Matches WHERE id = ?', [id]);
-    if (matchRow && matchRow.creatorId && matchRow.creatorId !== userId) {
+    const matchRow = await db.get('SELECT creatorId, location, maxPlayers FROM Matches WHERE id = ?', [id]);
+    if (!matchRow) return res.status(404).json({error: 'Maç bulunamadı'});
+
+    const activeCount = await db.get("SELECT COUNT(*) as c FROM MatchPlayers WHERE matchId = ? AND status = 'ACTIVE'", [id]);
+    const isReserve = activeCount.c >= matchRow.maxPlayers;
+    const playerStatus = isReserve ? 'RESERVE' : 'ACTIVE';
+
+    await db.run('INSERT OR IGNORE INTO MatchPlayers (matchId, userId, status) VALUES (?, ?, ?)', [id, userId, playerStatus]);
+    
+    res.json({ message: isReserve ? 'Kadro doluydu, yedeğe alındınız.' : 'Maça katılım başarılı!' });
+    
+    // Bildirim
+    if (matchRow.creatorId && matchRow.creatorId !== userId) {
        await db.run('INSERT INTO Notifications (id, userId, message, type) VALUES (?, ?, ?, ?)', [
          Date.now().toString() + Math.random(),
          matchRow.creatorId,
-         `Bir oyuncu ${matchRow.location} maçına katıldı! Kadroya göz at.`,
+         `Bir oyuncu ${matchRow.location} maçına ${isReserve ? 'yedek olarak ' : ''}katıldı!`,
          'JOIN'
        ]);
     }
+
   } catch (error) {
     res.status(500).json({ error: 'Maça katılırken hata oluştu.' });
   }
@@ -477,7 +490,25 @@ app.post('/api/matches/:id/leave', async (req, res) => {
   try {
     const { id } = req.params;
     const { userId } = req.body;
+    
+    const leavingPlayer = await db.get('SELECT status FROM MatchPlayers WHERE matchId = ? AND userId = ?', [id, userId]);
     await db.run('DELETE FROM MatchPlayers WHERE matchId = ? AND userId = ?', [id, userId]);
+    
+    if (leavingPlayer && leavingPlayer.status === 'ACTIVE') {
+      const firstReserve = await db.get("SELECT userId FROM MatchPlayers WHERE matchId = ? AND status = 'RESERVE' ORDER BY joinedAt ASC LIMIT 1", [id]);
+      if (firstReserve) {
+         await db.run("UPDATE MatchPlayers SET status = 'ACTIVE' WHERE matchId = ? AND userId = ?", [id, firstReserve.userId]);
+         
+         const matchRow = await db.get('SELECT location FROM Matches WHERE id = ?', [id]);
+         await db.run('INSERT INTO Notifications (id, userId, message, type) VALUES (?, ?, ?, ?)', [
+           Date.now().toString() + Math.random(),
+           firstReserve.userId,
+           `Müjde! ${matchRow?.location} maçında bir kişilik yer açıldı ve yedeğe alındığın listede AS KADROYA yükseldin!`,
+           'INFO'
+         ]);
+      }
+    }
+
     res.json({ message: 'Maçtan çıkıldı.' });
   } catch (error) {
     res.status(500).json({ error: 'Maçtan çıkarken hata oluştu.' });
