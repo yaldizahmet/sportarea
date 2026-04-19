@@ -122,6 +122,16 @@ let db: any;
       )
     `);
 
+    await db.exec(`
+      CREATE TABLE IF NOT EXISTS GroupMessages (
+        id TEXT PRIMARY KEY,
+        groupId TEXT NOT NULL,
+        userId TEXT NOT NULL,
+        message TEXT NOT NULL,
+        createdAt DATETIME DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+
     console.log('Database connected and schemas initialized.');
 })();
 
@@ -212,27 +222,28 @@ app.get('/api/groups', async (req, res) => {
 
 app.post('/api/groups', async (req, res) => {
   try {
-    const { name, creatorId } = req.body;
-    const id = Date.now().toString();
+    const { creatorId, name } = req.body;
     const inviteCode = Math.random().toString(36).substring(2, 8).toUpperCase();
+    const groupId = Date.now().toString();
+
+    await db.run('INSERT INTO Groups (id, name, inviteCode, creatorId) VALUES (?, ?, ?, ?)', [groupId, name, inviteCode, creatorId]);
+    await db.run('INSERT INTO GroupMembers (groupId, userId) VALUES (?, ?)', [groupId, creatorId]);
     
-    await db.run('INSERT INTO Groups (id, name, inviteCode, creatorId) VALUES (?, ?, ?, ?)', [id, name, inviteCode, creatorId]);
-    await db.run('INSERT INTO GroupMembers (groupId, userId) VALUES (?, ?)', [id, creatorId]);
-    
-    res.json({ message: 'Grup oluşturuldu', group: { id, name, inviteCode } });
+    res.status(201).json({ message: 'Grup oluşturuldu', inviteCode });
   } catch (error) {
-    res.status(500).json({ error: 'Grup oluşturulurken hata oluştu.' });
+    res.status(500).json({ error: 'Grup oluşturulamadı.' });
   }
 });
 
 app.post('/api/groups/join', async (req, res) => {
   try {
-    const { inviteCode, userId } = req.body;
-    const group = await db.get('SELECT * FROM Groups WHERE inviteCode = ?', [inviteCode]);
-    if (!group) return res.status(404).json({ error: 'Geçersiz davet kodu.' });
+    const { userId, inviteCode } = req.body;
+    const group = await db.get('SELECT id FROM Groups WHERE inviteCode = ?', [inviteCode]);
+    
+    if (!group) return res.status(404).json({ error: 'Geçersiz davet kodu' });
 
     await db.run('INSERT OR IGNORE INTO GroupMembers (groupId, userId) VALUES (?, ?)', [group.id, userId]);
-    res.json({ message: 'Gruba katılım başarılı!', group });
+    res.json({ message: 'Gruba katılım başarılı!' });
   } catch (error) {
     res.status(500).json({ error: 'Gruba katılırken hata oluştu.' });
   }
@@ -240,17 +251,45 @@ app.post('/api/groups/join', async (req, res) => {
 
 app.get('/api/groups/:id/members', async (req, res) => {
   try {
+     const { id } = req.params;
+     const members = await db.all(`
+       SELECT u.id, u.name, u.avatar, u.position 
+       FROM User u
+       JOIN GroupMembers gm ON u.id = gm.userId
+       WHERE gm.groupId = ?
+     `, [id]);
+     res.json(members);
+  } catch(e) {
+     res.status(500).json({ error: 'Üyeler alınamadı' });
+  }
+});
+
+app.get('/api/groups/:id/messages', async (req, res) => {
+  try {
     const { id } = req.params;
-    const members = await db.all(`
-      SELECT User.id, User.name, 
-             (SELECT COUNT(*) FROM MatchPlayers WHERE MatchPlayers.userId = User.id) as matches
-      FROM GroupMembers
-      JOIN User ON GroupMembers.userId = User.id
-      WHERE GroupMembers.groupId = ?
+    const messages = await db.all(`
+      SELECT m.*, u.name as userName, u.avatar 
+      FROM GroupMessages m
+      JOIN User u ON m.userId = u.id
+      WHERE m.groupId = ?
+      ORDER BY m.createdAt ASC
     `, [id]);
-    res.json(members);
-  } catch (error) {
-    res.status(500).json({ error: 'Grup üyeleri getirilirken hata oluştu.' });
+    res.json(messages);
+  } catch(e) {
+    res.status(500).json({ error: 'Mesajlar alınamadı' });
+  }
+});
+
+app.post('/api/groups/:id/messages', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { userId, message } = req.body;
+    await db.run('INSERT INTO GroupMessages (id, groupId, userId, message) VALUES (?, ?, ?, ?)', [
+      Date.now().toString(), id, userId, message
+    ]);
+    res.json({ message: 'Mesaj gönderildi' });
+  } catch(e) {
+    res.status(500).json({ error: 'Mesaj gönderilemedi' });
   }
 });
 
