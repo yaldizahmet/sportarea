@@ -373,13 +373,16 @@ app.get('/api/matches', async (req, res) => {
     const { userId } = req.query;
     if (userId) {
       const matches = await db.all(`
-        SELECT Matches.* FROM Matches 
-        JOIN MatchPlayers ON Matches.id = MatchPlayers.matchId 
-        WHERE MatchPlayers.userId = ?
-      `, [userId]);
+        SELECT DISTINCT m.*, g.name as groupName 
+        FROM Matches m
+        LEFT JOIN Groups g ON m.groupId = g.id
+        LEFT JOIN MatchPlayers mp ON m.id = mp.matchId
+        LEFT JOIN GroupMembers gm ON m.groupId = gm.groupId
+        WHERE mp.userId = ? OR gm.userId = ? OR m.groupId IS NULL
+      `, [userId, userId]);
       return res.json(matches);
     }
-    const matches = await db.all('SELECT * FROM Matches');
+    const matches = await db.all('SELECT Matches.*, Groups.name as groupName FROM Matches LEFT JOIN Groups ON Matches.groupId = Groups.id');
     res.json(matches);
   } catch (error) {
     res.status(500).json({ error: 'Maçlar getirilirken hata oluştu.' });
