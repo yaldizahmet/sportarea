@@ -467,10 +467,10 @@ app.get('/api/matches/:id/players', async (req, res) => {
          const allNotifications = await db.all("SELECT userId, metadata FROM Notifications WHERE type = 'MATCH_INVITE'");
          
          for (const gm of groupMembers) {
-            const hasJoined = players.some(p => p.id === gm.id);
+            const hasJoined = players.some((p: any) => p.id === gm.id);
             if (!hasJoined && gm.id !== matchRow.creatorId) {
                // Check if they have a notification pending
-               const hasNotification = allNotifications.some(n => {
+               const hasNotification = allNotifications.some((n: any) => {
                   if (n.userId !== gm.id) return false;
                   try {
                      const meta = JSON.parse(n.metadata);
