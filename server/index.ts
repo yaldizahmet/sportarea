@@ -110,6 +110,9 @@ let db: any;
       await db.exec(`ALTER TABLE Matches ADD COLUMN teamAName TEXT DEFAULT 'A Takımı';`);
       await db.exec(`ALTER TABLE Matches ADD COLUMN teamBName TEXT DEFAULT 'B Takımı';`);
     } catch (e) {}
+    try {
+      await db.exec(`ALTER TABLE Notifications ADD COLUMN metadata TEXT;`);
+    } catch (e) {}
     
     await db.exec(`
       CREATE TABLE IF NOT EXISTS Notifications (
@@ -367,6 +370,16 @@ app.post('/api/notifications/read', async (req, res) => {
   }
 });
 
+app.delete('/api/notifications/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    await db.run('DELETE FROM Notifications WHERE id = ?', [id]);
+    res.json({ message: 'Bildirim silindi' });
+  } catch (error) {
+    res.status(500).json({ error: 'Bildirim silinemedi' });
+  }
+});
+
 // MATCHES API
 app.get('/api/matches', async (req, res) => {
   try {
@@ -403,6 +416,20 @@ app.post('/api/matches', async (req, res) => {
       await db.run('INSERT INTO MatchPlayers (matchId, userId) VALUES (?, ?)', [id, creatorId]);
     }
     
+    if (groupId) {
+      const groupData = await db.get('SELECT name FROM Groups WHERE id = ?', [groupId]);
+      const members = await db.all('SELECT userId FROM GroupMembers WHERE groupId = ? AND userId != ?', [groupId, creatorId || '']);
+      for (const m of members) {
+         await db.run('INSERT INTO Notifications (id, userId, message, type, metadata) VALUES (?, ?, ?, ?, ?)', [
+           Date.now().toString() + Math.random(),
+           m.userId,
+           `${groupData?.name || 'Bir grup'} grubuna yeni bir maç daveti geldi! Kabul ediyor musun?`,
+           'MATCH_INVITE',
+           JSON.stringify({ matchId: id })
+         ]);
+      }
+    }
+
     res.json({ message: 'Maç oluşturuldu', match: { id, date, time, location, maxPlayers } });
   } catch (error) {
     res.status(500).json({ error: 'Maç oluşturulurken hata oluştu.' });
