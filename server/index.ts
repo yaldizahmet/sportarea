@@ -477,19 +477,25 @@ app.get('/api/users/:id/stats', async (req, res) => {
     // Initial defaults if nobody has rated this player yet
     const hasRatings = ratings && ratings.ratingCount > 0;
     
-    const idNum = parseInt(id.slice(-4)) || Math.floor(Math.random() * 100);
-    const mockGoals = (idNum % 5) * numMatches + (idNum % 3);
-    const mockScore = mockGoals * 3 + numMatches * 5 + 40;
+    // Fetch real goals
+    const goalsQuery = await db.get('SELECT SUM(goals) as totalGoals FROM MatchPlayers WHERE userId = ?', [id]);
+    const realGoals = goalsQuery && goalsQuery.totalGoals ? goalsQuery.totalGoals : 0;
+    
+    const speed = hasRatings ? Math.round(ratings.avgSpeed) : 60;
+    const shoot = hasRatings ? Math.round(ratings.avgShoot) : 60;
+    const pass = hasRatings ? Math.round(ratings.avgPass) : 60;
+    const physique = hasRatings ? Math.round(ratings.avgPhysique) : 60;
+    const overallScore = Math.round((speed + shoot + pass + physique) / 4) + (numMatches > 5 ? 2 : 0) + (realGoals > 10 ? 3 : 0);
     
     res.json({
         matches: numMatches,
-        score: mockScore, 
-        goals: mockGoals,
+        score: overallScore > 99 ? 99 : overallScore, 
+        goals: realGoals,
         skills: {
-            speed: hasRatings ? Math.round(ratings.avgSpeed) : 60,
-            shoot: hasRatings ? Math.round(ratings.avgShoot) : 60,
-            pass: hasRatings ? Math.round(ratings.avgPass) : 60,
-            physique: hasRatings ? Math.round(ratings.avgPhysique) : 60
+            speed,
+            shoot,
+            pass,
+            physique
         }
     });
   } catch (error) {
