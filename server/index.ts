@@ -448,13 +448,50 @@ app.post('/api/matches', async (req, res) => {
 app.get('/api/matches/:id/players', async (req, res) => {
    try {
      const { id } = req.params;
-      const players = await db.all(`
+     const players = await db.all(`
         SELECT User.id, User.name, User.avatar, User.role as position, MatchPlayers.team, MatchPlayers.goals, MatchPlayers.status 
         FROM MatchPlayers 
         JOIN User ON MatchPlayers.userId = User.id 
         WHERE MatchPlayers.matchId = ?
       `, [id]);
-     res.json(players);
+      
+      const matchRow = await db.get('SELECT groupId, creatorId FROM Matches WHERE id = ?', [id]);
+      if (matchRow && matchRow.groupId) {
+         const groupMembers = await db.all(`
+            SELECT User.id, User.name, User.avatar, User.role as position 
+            FROM GroupMembers 
+            JOIN User ON GroupMembers.userId = User.id 
+            WHERE GroupMembers.groupId = ?
+         `, [matchRow.groupId]);
+         
+         const allNotifications = await db.all("SELECT userId, metadata FROM Notifications WHERE type = 'MATCH_INVITE'");
+         
+         for (const gm of groupMembers) {
+            const hasJoined = players.some(p => p.id === gm.id);
+            if (!hasJoined && gm.id !== matchRow.creatorId) {
+               // Check if they have a notification pending
+               const hasNotification = allNotifications.some(n => {
+                  if (n.userId !== gm.id) return false;
+                  try {
+                     const meta = JSON.parse(n.metadata);
+                     return meta.matchId === id;
+                  } catch(e) { return false; }
+               });
+               
+               players.push({
+                 id: gm.id,
+                 name: gm.name,
+                 avatar: gm.avatar,
+                 position: gm.position,
+                 team: 'NONE',
+                 goals: 0,
+                 status: hasNotification ? 'PENDING' : 'DECLINED'
+               });
+            }
+         }
+      }
+      
+      res.json(players);
    } catch (error) {
     res.status(500).json({ error: 'Oyuncular getirilirken hata oluştu.' });
   }
