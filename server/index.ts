@@ -276,6 +276,36 @@ app.post('/api/users/:id/position', async (req, res) => {
   }
 });
 
+// LEADERBOARD API
+app.get('/api/leaderboard', async (req, res) => {
+  try {
+     const users = await db.all('SELECT id, name, avatar, position FROM User');
+     const results = [];
+     for(const u of users) {
+        const stats = await db.get('SELECT COUNT(*) as count, SUM(goals) as totalGoals FROM MatchPlayers WHERE userId = ?', [u.id]);
+        const m = stats ? stats.count : 0;
+        const g = (stats && stats.totalGoals) ? stats.totalGoals : 0;
+        
+        const ratings = await db.get('SELECT AVG(speed) as avgSpeed, AVG(shoot) as avgShoot, AVG(pass) as avgPass, AVG(physique) as avgPhysique, COUNT(*) as c FROM Ratings WHERE ratedId = ?', [u.id]);
+        
+        let score = 60;
+        if(ratings && ratings.c > 0) {
+           score = Math.round((ratings.avgSpeed + ratings.avgShoot + ratings.avgPass + ratings.avgPhysique) / 4);
+        }
+        score += (m > 5 ? 2 : 0) + (g > 10 ? 3 : 0);
+        
+        results.push({
+           id: u.id, name: u.name, avatar: u.avatar, position: u.position,
+           matches: m, goals: g, score: score > 99 ? 99 : score
+        });
+     }
+     
+     res.json(results);
+  } catch(error) {
+     res.status(500).json({error: 'Liderlik tablosu alınamadı'});
+  }
+});
+
 // NOTIFICATIONS API
 app.get('/api/notifications', async (req, res) => {
   try {
