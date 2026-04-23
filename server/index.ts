@@ -357,6 +357,50 @@ app.get('/api/leaderboard', async (req, res) => {
   }
 });
 
+// GROUP LEADERBOARD API
+app.get('/api/leaderboard/groups', async (req, res) => {
+   try {
+     const { userId } = req.query;
+     if(!userId) return res.status(400).json({error: 'userId is required'});
+
+     const userGroups = await db.all('SELECT groupId FROM GroupMembers WHERE userId = ?', [userId]);
+     if(userGroups.length === 0) return res.json([]);
+
+     const groupIds = userGroups.map((g: any) => g.groupId);
+     const placeholders = groupIds.map(() => '?').join(',');
+
+     const groups = await db.all(`SELECT id, name, inviteCode FROM Groups WHERE id IN (${placeholders})`, groupIds);
+     
+     const results = [];
+     for(const g of groups) {
+       const matchCountRes = await db.get("SELECT COUNT(*) as count FROM Matches WHERE groupId = ? AND status = 'COMPLETED'", [g.id]);
+       const matches = matchCountRes ? matchCountRes.count : 0;
+       
+       const goalCountRes = await db.get(`
+         SELECT SUM(MatchPlayers.goals) as totalGoals 
+         FROM MatchPlayers 
+         JOIN Matches ON MatchPlayers.matchId = Matches.id 
+         WHERE Matches.groupId = ? AND Matches.status = 'COMPLETED'
+       `, [g.id]);
+       const goals = goalCountRes && goalCountRes.totalGoals ? goalCountRes.totalGoals : 0;
+       
+       const score = matches * 10 + goals * 3;
+       
+       results.push({
+         id: g.id,
+         name: g.name,
+         matches,
+         goals,
+         score
+       });
+     }
+     
+     res.json(results);
+   } catch(e) {
+     res.status(500).json({error: 'Liderlik tablosu alınamadı'});
+   }
+});
+
 // NOTIFICATIONS API
 app.get('/api/notifications', async (req, res) => {
   try {
