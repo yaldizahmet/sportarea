@@ -1,0 +1,5 @@
+﻿index.ts(652,111): error TS7006: Parameter 'a' implicitly has an 'any' type.
+index.ts(652,113): error TS7006: Parameter 'b' implicitly has an 'any' type.
+index.ts(653,107): error TS7006: Parameter 'a' implicitly has an 'any' type.
+index.ts(653,109): error TS7006: Parameter 'b' implicitly has an 'any' type.
+prisma.config.ts(4,30): error TS2307: Cannot find module 'prisma/config' or its corresponding type declarations.

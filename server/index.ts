@@ -649,8 +649,8 @@ app.post('/api/matches/:id/divide', async (req, res) => {
     }
 
     // Mevkilere ayırıp yeteneğe göre büyükten küçüğe sırala
-    const goalkeepers = players.filter((p: any) => (p.position || '').toLowerCase().includes('kaleci')).sort((a,b) => b.overall - a.overall);
-    const others = players.filter((p: any) => !(p.position || '').toLowerCase().includes('kaleci')).sort((a,b) => b.overall - a.overall);
+    const goalkeepers = players.filter((p: any) => (p.position || '').toLowerCase().includes('kaleci')).sort((a: any,b: any) => b.overall - a.overall);
+    const others = players.filter((p: any) => !(p.position || '').toLowerCase().includes('kaleci')).sort((a: any,b: any) => b.overall - a.overall);
 
     const teamA: any[] = [];
     const teamB: any[] = [];
