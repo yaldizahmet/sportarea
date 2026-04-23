@@ -135,6 +135,16 @@ let db: any;
     `);
 
     await db.exec(`
+      CREATE TABLE IF NOT EXISTS MvpVotes (
+        id TEXT PRIMARY KEY,
+        matchId TEXT NOT NULL,
+        voterId TEXT NOT NULL,
+        votedId TEXT NOT NULL,
+        createdAt DATETIME DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+
+    await db.exec(`
       CREATE TABLE IF NOT EXISTS GroupMessages (
         id TEXT PRIMARY KEY,
         groupId TEXT NOT NULL,
@@ -706,6 +716,36 @@ app.post('/api/matches/:id/finish', async (req, res) => {
     res.json({ message: 'Maç başarıyla tamamlandı.' });
   } catch (error) {
     res.status(500).json({ error: 'Maç bitirilirken hata oluştu.' });
+  }
+});
+
+// MVP API
+app.get('/api/matches/:id/mvp', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const votes = await db.all('SELECT voterId, votedId FROM MvpVotes WHERE matchId = ?', [id]);
+    res.json(votes);
+  } catch (error) {
+    res.status(500).json({ error: 'MVP oyları alınamadı.' });
+  }
+});
+
+app.post('/api/matches/:id/mvp', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { voterId, votedId } = req.body;
+    
+    // Check if ALREADY voted
+    const existing = await db.get('SELECT id FROM MvpVotes WHERE matchId = ? AND voterId = ?', [id, voterId]);
+    if (existing) {
+       return res.status(400).json({ error: 'Zaten MVP oyu kullandınız!' });
+    }
+    
+    const voteId = Date.now().toString() + Math.random().toString().slice(2, 5);
+    await db.run('INSERT INTO MvpVotes (id, matchId, voterId, votedId) VALUES (?, ?, ?, ?)', [voteId, id, voterId, votedId]);
+    res.json({ message: 'MVP oyunuz kaydedildi!' });
+  } catch (error) {
+    res.status(500).json({ error: 'MVP oyu kaydedilemedi.' });
   }
 });
 
