@@ -624,40 +624,54 @@ app.post('/api/matches/:id/divide', async (req, res) => {
       SELECT User.id, User.position
       FROM MatchPlayers 
       JOIN User ON MatchPlayers.userId = User.id 
-      WHERE MatchPlayers.matchId = ?
+      WHERE MatchPlayers.matchId = ? AND MatchPlayers.status = 'ACTIVE'
     `, [id]);
 
     if(players.length < 2) return res.status(400).json({ error: 'Takım kurmak için yeterli oyuncu yok.' });
 
-    // Mevkilere göre ayır
-    const goalkeepers = players.filter((p: any) => (p.position || '').toLowerCase().includes('kaleci'));
-    const others = players.filter((p: any) => !(p.position || '').toLowerCase().includes('kaleci'));
+    // Her oyuncunun overall rating'ini hesapla
+    for (const p of players) {
+       const ratings = await db.get('SELECT AVG(speed) as s, AVG(shoot) as sh, AVG(pass) as pa, AVG(physique) as ph FROM Ratings WHERE ratedId = ?', [p.id]);
+       p.overall = 65; // default average
+       if (ratings && ratings.s !== null) {
+          p.overall = (ratings.s + ratings.sh + ratings.pa + ratings.ph) / 4;
+       }
+    }
 
-    // Grupları rastgele karıştır
-    goalkeepers.sort(() => 0.5 - Math.random());
-    others.sort(() => 0.5 - Math.random());
+    // Mevkilere ayırıp yeteneğe göre büyükten küçüğe sırala
+    const goalkeepers = players.filter((p: any) => (p.position || '').toLowerCase().includes('kaleci')).sort((a,b) => b.overall - a.overall);
+    const others = players.filter((p: any) => !(p.position || '').toLowerCase().includes('kaleci')).sort((a,b) => b.overall - a.overall);
 
     const teamA: any[] = [];
     const teamB: any[] = [];
+    let sumA = 0;
+    let sumB = 0;
 
-    // Önce kalecileri eşit dağıt
-    goalkeepers.forEach((p: any, idx: number) => {
-      if (idx % 2 === 0) teamA.push(p);
-      else teamB.push(p);
-    });
+    const assignToTeam = (p: any, forceBalance = false) => {
+       if (teamA.length === teamB.length) {
+          if (sumA <= sumB) { teamA.push(p); sumA += p.overall; }
+          else { teamB.push(p); sumB += p.overall; }
+       } else if (teamA.length < teamB.length) {
+          teamA.push(p); sumA += p.overall;
+       } else {
+          teamB.push(p); sumB += p.overall;
+       }
+    };
 
-    // Sonra diğerlerini kalan boşluklara göre dağıt
-    others.forEach((p: any) => {
-      if (teamA.length <= teamB.length) teamA.push(p);
-      else teamB.push(p);
-    });
+    // Önce kalecileri akıllı dağıt
+    goalkeepers.forEach((p: any) => assignToTeam(p));
+    // Sonra kalanları dağıt
+    others.forEach((p: any) => assignToTeam(p));
 
     await db.run('UPDATE MatchPlayers SET team = "UNASSIGNED" WHERE matchId = ?', [id]);
     
     for (const p of teamA) await db.run('UPDATE MatchPlayers SET team = "A" WHERE matchId = ? AND userId = ?', [id, p.id]);
     for (const p of teamB) await db.run('UPDATE MatchPlayers SET team = "B" WHERE matchId = ? AND userId = ?', [id, p.id]);
 
-    res.json({ message: 'Takımlar mevkilere göre dengeli şekilde dağıtıldı!' });
+    res.json({ 
+       message: 'Takımlar zekice kalibre edildi!', 
+       stats: { teamA_overall: Math.round(sumA/teamA.length), teamB_overall: Math.round(sumB/teamB.length) }
+    });
   } catch (error) {
     res.status(500).json({ error: 'Bölme hatası' });
   }
