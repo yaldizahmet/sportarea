@@ -4,13 +4,60 @@ import cors from 'cors';
 import sqlite3 from 'sqlite3';
 import { open } from 'sqlite';
 import path from 'path';
+import { randomUUID } from 'node:crypto';
 import jwt from 'jsonwebtoken';
+import bcrypt from 'bcryptjs';
 
-const JWT_SECRET = process.env.JWT_SECRET || 'super-secret-key-sporarea-2026';
+const JWT_SECRET = process.env.JWT_SECRET;
+if (!JWT_SECRET) {
+  throw new Error('JWT_SECRET environment variable is required.');
+}
+const BCRYPT_SALT_ROUNDS = 12;
 
 const app = express();
 app.use(cors());
 app.use(express.json());
+
+const toSafeUser = (user: any) => {
+  if (!user) return user;
+  const { password, ...safeUser } = user;
+  return safeUser;
+};
+
+const timeToMinutes = (t: string): number | null => {
+  if (typeof t !== 'string' || !t.trim()) return null;
+  const p = t.trim().split(':');
+  const h = parseInt(p[0] ?? '0', 10);
+  const m = parseInt((p[1] ?? '0').replace(/\D.*/, '').slice(0, 2) || '0', 10);
+  if (Number.isNaN(h) || Number.isNaN(m) || h < 0 || h > 23 || m < 0 || m > 59) return null;
+  return h * 60 + m;
+};
+
+const isMinutesInWindow = (matchMin: number, start: string, end: string): boolean => {
+  const s = timeToMinutes(start);
+  const e = timeToMinutes(end);
+  if (s === null || e === null) return false;
+  if (s <= e) {
+    return matchMin >= s && matchMin <= e;
+  }
+  return matchMin >= s || matchMin <= e;
+};
+
+const matchDayAndMinutesFromRow = (match: any): { dayOfWeek: number; matchMinutes: number } | null => {
+  let dayOfWeek: number;
+  if (match.matchTimestamp && Number(match.matchTimestamp) > 0) {
+    const d = new Date(Number(match.matchTimestamp));
+    if (Number.isNaN(d.getTime())) return null;
+    dayOfWeek = d.getDay();
+  } else {
+    const d = new Date(String(match.date));
+    if (Number.isNaN(d.getTime())) return null;
+    dayOfWeek = d.getDay();
+  }
+  const matchMinutes = timeToMinutes(String(match.time ?? '12:00'));
+  if (matchMinutes === null) return null;
+  return { dayOfWeek, matchMinutes };
+};
 
 // Initialize Native SQLite DB
 let db: any;
@@ -154,6 +201,20 @@ let db: any;
       )
     `);
 
+    await db.exec(`
+      CREATE TABLE IF NOT EXISTS UserAvailability (
+        id TEXT PRIMARY KEY,
+        userId TEXT NOT NULL,
+        dayOfWeek INTEGER NOT NULL,
+        startTime TEXT NOT NULL,
+        endTime TEXT NOT NULL,
+        isActive INTEGER NOT NULL DEFAULT 1,
+        createdAt DATETIME DEFAULT CURRENT_TIMESTAMP
+      );
+      CREATE INDEX IF NOT EXISTS idx_user_availability_user_day
+        ON UserAvailability (userId, dayOfWeek);
+    `);
+
     console.log('Database connected and schemas initialized.');
 })();
 
@@ -174,7 +235,8 @@ app.post('/api/register', async (req, res) => {
     }
 
     const id = Date.now().toString();
-    await db.run('INSERT INTO User (id, name, email, password, role) VALUES (?, ?, ?, ?, ?)', [id, name, email, password, 'ORGANIZER']);
+    const hashedPassword = await bcrypt.hash(password, BCRYPT_SALT_ROUNDS);
+    await db.run('INSERT INTO User (id, name, email, password, role) VALUES (?, ?, ?, ?, ?)', [id, name, email, hashedPassword, 'ORGANIZER']);
     
     const user = { id, name, email, role: 'ORGANIZER' };
     const token = jwt.sign({ id }, JWT_SECRET, { expiresIn: '30d' });
@@ -194,13 +256,29 @@ app.post('/api/login', async (req, res) => {
     }
 
     const user = await db.get('SELECT * FROM User WHERE email = ?', [email]);
-    if (!user || user.password !== password) {
+    if (!user) {
+      return res.status(401).json({ error: 'E-posta veya şifre hatalı.' });
+    }
+
+    // Backward compatibility: upgrade old plaintext passwords on successful login.
+    let isPasswordValid = false;
+    if (typeof user.password === 'string' && user.password.startsWith('$2')) {
+      isPasswordValid = await bcrypt.compare(password, user.password);
+    } else {
+      isPasswordValid = user.password === password;
+      if (isPasswordValid) {
+        const upgradedHash = await bcrypt.hash(password, BCRYPT_SALT_ROUNDS);
+        await db.run('UPDATE User SET password = ? WHERE id = ?', [upgradedHash, user.id]);
+      }
+    }
+
+    if (!isPasswordValid) {
       return res.status(401).json({ error: 'E-posta veya şifre hatalı.' });
     }
 
     const token = jwt.sign({ id: user.id }, JWT_SECRET, { expiresIn: '30d' });
 
-    res.json({ message: 'Giriş başarılı!', user, token });
+    res.json({ message: 'Giriş başarılı!', user: toSafeUser(user), token });
   } catch (error) {
     console.error("Login Error:", error);
     res.status(500).json({ error: 'Giriş yaparken bir hata oluştu.' });
@@ -217,7 +295,7 @@ app.get('/api/me', async (req, res) => {
     
     if (!user) return res.status(404).json({ error: 'Kullanıcı bulunamadı.' });
     
-    res.json({ user });
+    res.json({ user: toSafeUser(user) });
   } catch (err) {
     res.status(401).json({ error: 'Geçersiz token.' });
   }
@@ -334,6 +412,76 @@ app.post('/api/users/:id/position', async (req, res) => {
     res.json({ message: 'Mevki güncellendi!' });
   } catch (error) {
     res.status(500).json({ error: 'Mevki güncellenirken hata oluştu.' });
+  }
+});
+
+// USER AVAILABILITY (müsaitlik) API
+app.get('/api/users/:id/availability', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const user = await db.get('SELECT id FROM User WHERE id = ?', [id]);
+    if (!user) return res.status(404).json({ error: 'Kullanıcı bulunamadı.' });
+    const includeInactive = String(req.query.includeInactive) === '1';
+    const rows = includeInactive
+      ? await db.all('SELECT * FROM UserAvailability WHERE userId = ? ORDER BY dayOfWeek, startTime', [id])
+      : await db.all(
+          'SELECT * FROM UserAvailability WHERE userId = ? AND isActive = 1 ORDER BY dayOfWeek, startTime',
+          [id]
+        );
+    res.json(rows);
+  } catch (error) {
+    res.status(500).json({ error: 'Müsaitlikler alınamadı.' });
+  }
+});
+
+app.post('/api/users/:id/availability', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { dayOfWeek, startTime, endTime } = req.body;
+    const user = await db.get('SELECT id FROM User WHERE id = ?', [id]);
+    if (!user) return res.status(404).json({ error: 'Kullanıcı bulunamadı.' });
+    if (
+      dayOfWeek === undefined ||
+      dayOfWeek === null ||
+      startTime == null ||
+      endTime == null
+    ) {
+      return res.status(400).json({ error: 'dayOfWeek, startTime ve endTime gerekli.' });
+    }
+    const d = Number(dayOfWeek);
+    if (!Number.isInteger(d) || d < 0 || d > 6) {
+      return res.status(400).json({ error: 'dayOfWeek 0 (Pazar) ile 6 (Cumartesi) arası olmalı.' });
+    }
+    if (timeToMinutes(String(startTime)) === null || timeToMinutes(String(endTime)) === null) {
+      return res.status(400).json({ error: 'startTime ve endTime HH:mm formatında olmalı.' });
+    }
+    const availId = randomUUID();
+    await db.run(
+      'INSERT INTO UserAvailability (id, userId, dayOfWeek, startTime, endTime, isActive) VALUES (?, ?, ?, ?, ?, 1)',
+      [availId, id, d, String(startTime).trim(), String(endTime).trim()]
+    );
+    const row = await db.get('SELECT * FROM UserAvailability WHERE id = ?', [availId]);
+    res.status(201).json({ message: 'Müsaitlik kaydedildi.', availability: row });
+  } catch (error) {
+    res.status(500).json({ error: 'Müsaitlik kaydedilemedi.' });
+  }
+});
+
+app.delete('/api/users/:id/availability/:availabilityId', async (req, res) => {
+  try {
+    const { id, availabilityId } = req.params;
+    const user = await db.get('SELECT id FROM User WHERE id = ?', [id]);
+    if (!user) return res.status(404).json({ error: 'Kullanıcı bulunamadı.' });
+    const r = await db.run(
+      'DELETE FROM UserAvailability WHERE id = ? AND userId = ?',
+      [availabilityId, id]
+    );
+    if (r && r.changes === 0) {
+      return res.status(404).json({ error: 'Kayıt bulunamadı.' });
+    }
+    res.json({ message: 'Müsaitlik silindi.' });
+  } catch (error) {
+    res.status(500).json({ error: 'Müsaitlik silinemedi.' });
   }
 });
 
@@ -496,6 +644,96 @@ app.post('/api/matches', async (req, res) => {
     res.json({ message: 'Maç oluşturuldu', match: { id, date, time, location, maxPlayers } });
   } catch (error) {
     res.status(500).json({ error: 'Maç oluşturulurken hata oluştu.' });
+  }
+});
+
+// Must be before /api/matches/:id/players so "suggested-players" is not captured as :id
+app.get('/api/matches/:id/suggested-players', async (req, res) => {
+  try {
+    const { id: matchId } = req.params;
+    const match = await db.get('SELECT * FROM Matches WHERE id = ?', [matchId]);
+    if (!match) {
+      return res.status(404).json({ error: 'Maç bulunamadı.' });
+    }
+    if (!match.groupId) {
+      return res.json({
+        message: 'Grupsuz maçlarda grup üyeliği tabanı olmadığından öneri listelenmez.',
+        dayOfWeek: null,
+        matchMinutes: null,
+        suggested: [],
+        notInSlot: []
+      });
+    }
+    const slot = matchDayAndMinutesFromRow(match);
+    if (!slot) {
+      return res.status(400).json({ error: 'Maç tarihi veya saat bilgisi okunamadı. date/time veya matchTimestamp girin.' });
+    }
+    const { dayOfWeek, matchMinutes } = slot;
+
+    const members = await db.all(
+      `SELECT u.id, u.name, u.avatar, u.position
+       FROM User u
+       JOIN GroupMembers gm ON u.id = gm.userId
+       WHERE gm.groupId = ?`,
+      [match.groupId]
+    );
+    const inMatchRows = await db.all('SELECT userId FROM MatchPlayers WHERE matchId = ?', [matchId]);
+    const inMatchSet = new Set(inMatchRows.map((r: { userId: string }) => r.userId));
+
+    const lastCompleted = await db.all(
+      `SELECT id FROM Matches
+       WHERE groupId = ? AND status = 'COMPLETED'
+       ORDER BY COALESCE(matchTimestamp, 0) DESC, createdAt DESC
+       LIMIT 2`,
+      [match.groupId]
+    );
+    const lastMatchIds = lastCompleted.map((r: { id: string }) => r.id);
+    const idPlaceholders = lastMatchIds.length > 0 ? lastMatchIds.map(() => '?').join(',') : '';
+
+    const suggested: { id: any; name: any; avatar: any; position: any; playedRecentGroupMatch: boolean }[] = [];
+    const notInSlot: { id: any; name: any; avatar: any; position: any }[] = [];
+
+    for (const u of members) {
+      if (inMatchSet.has(u.id)) continue;
+      const rows = await db.all(
+        'SELECT * FROM UserAvailability WHERE userId = ? AND dayOfWeek = ? AND isActive = 1',
+        [u.id, dayOfWeek]
+      );
+      const inSlot = rows.some((row: { startTime: string; endTime: string }) =>
+        isMinutesInWindow(matchMinutes, row.startTime, row.endTime)
+      );
+
+      let playedRecentGroupMatch = false;
+      if (idPlaceholders) {
+        const c = await db.get(
+          `SELECT COUNT(*) as c FROM MatchPlayers WHERE userId = ? AND matchId IN (${idPlaceholders})`,
+          [u.id, ...lastMatchIds]
+        );
+        playedRecentGroupMatch = Boolean(c && Number(c.c) > 0);
+      }
+
+      if (inSlot) {
+        suggested.push({ ...u, playedRecentGroupMatch });
+      } else {
+        notInSlot.push(u);
+      }
+    }
+
+    suggested.sort((a, b) => {
+      if (a.playedRecentGroupMatch !== b.playedRecentGroupMatch) {
+        return a.playedRecentGroupMatch ? 1 : -1;
+      }
+      return String(a.name || '').localeCompare(String(b.name || ''), 'tr', { sensitivity: 'base' });
+    });
+
+    res.json({
+      dayOfWeek,
+      matchMinutes,
+      suggested,
+      notInSlot
+    });
+  } catch (error) {
+    res.status(500).json({ error: 'Öneri listesi alınamadı.' });
   }
 });
 
@@ -850,21 +1088,34 @@ app.get('/api/users/:id/stats', async (req, res) => {
     const goalsQuery = await db.get('SELECT SUM(goals) as totalGoals FROM MatchPlayers WHERE userId = ?', [id]);
     const realGoals = goalsQuery && goalsQuery.totalGoals ? goalsQuery.totalGoals : 0;
     
+    // Fetch MVP votes
+    const mvpQuery = await db.get('SELECT COUNT(*) as c FROM MvpVotes WHERE votedId = ?', [id]);
+    const mvpVotes = mvpQuery && mvpQuery.c ? mvpQuery.c : 0;
+    
     const speed = hasRatings ? Math.round(ratings.avgSpeed) : 60;
     const shoot = hasRatings ? Math.round(ratings.avgShoot) : 60;
     const pass = hasRatings ? Math.round(ratings.avgPass) : 60;
     const physique = hasRatings ? Math.round(ratings.avgPhysique) : 60;
     const overallScore = Math.round((speed + shoot + pass + physique) / 4) + (numMatches > 5 ? 2 : 0) + (realGoals > 10 ? 3 : 0);
     
+    // Generate profile badges dynamically
+    const badges = [];
+    if (realGoals >= 5) badges.push({ id: 'top_scorer', icon: '⚽', title: 'Gol Makinesi', bg: 'rgba(0, 230, 118, 0.15)' });
+    if (numMatches >= 10) badges.push({ id: 'veteran', icon: '🌟', title: 'Müdavim', bg: 'rgba(56, 189, 248, 0.15)' });
+    if (mvpVotes > 0) badges.push({ id: 'mvp', icon: '🏆', title: 'Yıldız Oyuncu', bg: 'rgba(255, 193, 7, 0.15)' });
+    if (overallScore >= 75) badges.push({ id: 'pro', icon: '🔥', title: 'Pro Kariyer', bg: 'rgba(239, 68, 68, 0.15)' });
+
     res.json({
         matches: numMatches,
         score: overallScore > 99 ? 99 : overallScore, 
         goals: realGoals,
+        mvp: mvpVotes,
+        badges,
         skills: {
-            speed,
-            shoot,
-            pass,
-            physique
+           speed,
+           shoot,
+           pass,
+           physique
         }
     });
   } catch (error) {

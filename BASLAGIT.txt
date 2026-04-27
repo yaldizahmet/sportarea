@@ -1,0 +1,62 @@
+SporArea — en kolay yol
+
+=== Gercek TELEFON (Expo Go) — detay: TELEFON.txt ===
+1) IP-GUNCELLE.ps1   2) npm run dev:phone   3) Expo Go ile QR tara
+
+=== TELEFONSUZ: TARAYICIDA TEST (Expo Web) ===
+Telefon / Expo Go gerekmez. Bilgisayarda Chrome/Edge ile acilir.
+
+1) Kok klasorde bir kez:
+     npm run install:all
+     npm install
+
+2) Sonra TEK komut (sunucu + web birlikte):
+     npm run dev:web
+
+   VEYA cift tik: MOBI-WEB.ps1  (sunucuyu ayri pencerede acar, sonra web)
+
+3) Tarayici http://localhost:8081 gibi bir adres acar; giris ekranindan devam et.
+   API icin sunucu http://localhost:3000 da calismali.
+
+Web'de localhost API kullanilir; mobile\.env IP'si web icin sart degil.
+
+
+ONCE KURULUM (bir kez)
+----------------------
+PowerShell’i ac, su klasore git (kendi kullanici adina gore duzelt):
+
+  cd C:\Users\user\Documents\sporarea
+
+Sonra TAM kelimeyle yaz (instal DEGIL, install):
+
+  npm install
+
+Bu sadece kok klasorde calisir ve hem server hem mobile kurar:
+
+  npm run install:all
+
+Alternatif: KURULUM.ps1 dosyasina sag tik -> PowerShell ile calistir.
+
+Komut hata verirse:
+- "npm" taninmiyorsa -> Node.js LTS kur: https://nodejs.org  (20 veya 22 onerilir)
+- Node 24 ile sorun cikarsa -> Node 22 LTS’e dusur
+- Yanlis klasordesin -> once "cd" ile sporarea klasorune gir
+
+
+CALISTIRMA (her seferinde, 2 pencere)
+--------------------------------------
+Pencere A (sunucu):
+
+  cd C:\Users\user\Documents\sporarea
+  npm run server
+
+Pencere B (Expo):
+
+  cd C:\Users\user\Documents\sporarea
+  npm run mobile
+
+Telefonda Expo Go ile QR kodu tara; telefon ve PC ayni Wi-Fi’da olsun.
+
+mobile\.env icinde EXPO_PUBLIC_API_URL bilgisayarinin IPv4’u olmali (degistiyse ipconfig ile guncelle).
+
+server\.env icinde JWT_SECRET hazir olmali (yoksa sunucu acilmaz).

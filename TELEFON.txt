@@ -1,0 +1,35 @@
+SporArea — gercek telefonda (Expo Go) acmak
+
+0) Telefona "Expo Go" uygulamasini kur (App Store / Play Store).
+   Expo SDK 52 ile uyumlu surumu yukleyin.
+
+1) Bilgisayar ve telefon AYNI Wi-Fi aginda olsun (mobil veri kapali dene).
+
+2) Bu PC'nin Wi-Fi IP'sini mobile/.env icine yaz:
+   PowerShell'de sporarea klasorunde:
+     powershell -ExecutionPolicy Bypass -File .\IP-GUNCELLE.ps1
+   (mobile\.env icinde EXPO_PUBLIC_API_URL=http://SENIN_IP:3000/api olur)
+
+3) Sunucu + Expo (LAN — ayni ev Wi-Fi icin en kolay):
+   sporarea kok klasorunde:
+     npm run dev:phone
+   QR kodu Expo Go ile tara.
+
+   Ayri pencereler istersen:
+     Pencere A:  npm run server
+     Pencere B:  npm run mobile:lan
+
+4) Giris / kayit calismiyorsa:
+   - Sunucu penceresinde hata var mi bak
+   - Windows Guvenlik Duvari 3000 portunu engelliyor olabilir:
+     "Windows Defender Firewall" -> gelismis ayarlar -> gelen kurallar ->
+     yeni kural -> bagl noktasi TCP 3000 -> baglantsya izin ver
+   - IP degisti (modem reset) -> tekrar IP-GUNCELLE.ps1
+
+5) Ev Wi-Fi'da QR yine acilmazsa (bazen ag izolasyonu):
+     npm run mobile:tunnel
+   (internet uzerinden tunel; ilk sefer biraz yavas olabilir)
+   Not: API hala PC'de; tunnel sadece Metro/Expo icin. API icin de tunnel
+   gerekirse ayrica cozum gerekir — once LAN + duzgun IP ile dene.
+
+Ozet: IP-GUNCELLE.ps1 -> npm run dev:phone -> Expo Go ile QR.
