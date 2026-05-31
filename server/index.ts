@@ -393,6 +393,28 @@ app.post('/api/groups/:id/messages', async (req, res) => {
   }
 });
 
+app.delete('/api/groups/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    
+    // Grubu sil
+    await db.run('DELETE FROM Groups WHERE id = ?', [id]);
+    
+    // Üyeleri sil
+    await db.run('DELETE FROM GroupMembers WHERE groupId = ?', [id]);
+    
+    // Grup mesajlarını sil
+    await db.run('DELETE FROM GroupMessages WHERE groupId = ?', [id]);
+    
+    // İlişkili maçları genel maça çevir
+    await db.run('UPDATE Matches SET groupId = NULL WHERE groupId = ?', [id]);
+    
+    res.json({ message: 'Grup başarıyla iptal edildi ve silindi.' });
+  } catch (error) {
+    res.status(500).json({ error: 'Grup iptal edilirken hata oluştu.' });
+  }
+});
+
 app.post('/api/users/:id/avatar', async (req, res) => {
   try {
     const { id } = req.params;
@@ -737,6 +759,34 @@ app.get('/api/matches/:id/suggested-players', async (req, res) => {
   }
 });
 
+app.get('/api/matches/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const match = await db.get('SELECT * FROM Matches WHERE id = ?', [id]);
+    if (!match) return res.status(404).json({ error: 'Maç bulunamadı.' });
+    res.json(match);
+  } catch (error) {
+    res.status(500).json({ error: 'Maç bilgisi alınamadı.' });
+  }
+});
+
+app.delete('/api/matches/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const match = await db.get('SELECT * FROM Matches WHERE id = ?', [id]);
+    if (!match) return res.status(404).json({ error: 'Maç bulunamadı.' });
+
+    await db.run('DELETE FROM MatchPlayers WHERE matchId = ?', [id]);
+    await db.run('DELETE FROM MvpVotes WHERE matchId = ?', [id]);
+    await db.run('DELETE FROM MatchMessages WHERE matchId = ?', [id]);
+    await db.run('DELETE FROM Matches WHERE id = ?', [id]);
+
+    res.json({ message: 'Maç başarıyla iptal edildi.' });
+  } catch (error) {
+    res.status(500).json({ error: 'Maç iptal edilirken hata oluştu.' });
+  }
+});
+
 app.get('/api/matches/:id/players', async (req, res) => {
    try {
      const { id } = req.params;
@@ -919,23 +969,102 @@ app.post('/api/matches/:id/divide', async (req, res) => {
     res.json({ 
        message: 'Takımlar zekice kalibre edildi!', 
        stats: { teamA_overall: Math.round(sumA/teamA.length), teamB_overall: Math.round(sumB/teamB.length) }
-    });
+     });
   } catch (error) {
     res.status(500).json({ error: 'Bölme hatası' });
+  }
+});
+
+app.get('/api/matches/:id/suggest-teams', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const players = await db.all(`
+      SELECT User.id, User.name, User.avatar, User.position
+      FROM MatchPlayers 
+      JOIN User ON MatchPlayers.userId = User.id 
+      WHERE MatchPlayers.matchId = ? AND MatchPlayers.status = 'ACTIVE'
+    `, [id]);
+
+    if(players.length < 2) return res.status(400).json({ error: 'Takım kurmak için yeterli oyuncu yok.' });
+
+    for (const p of players) {
+       const ratings = await db.get('SELECT AVG(speed) as s, AVG(shoot) as sh, AVG(pass) as pa, AVG(physique) as ph FROM Ratings WHERE ratedId = ?', [p.id]);
+       p.overall = 65;
+       if (ratings && ratings.s !== null) {
+          p.overall = Math.round((ratings.s + ratings.sh + ratings.pa + ratings.ph) / 4);
+       }
+    }
+
+    const goalkeepers = players.filter((p: any) => (p.position || '').toLowerCase().includes('kaleci')).sort((a: any,b: any) => b.overall - a.overall);
+    const others = players.filter((p: any) => !(p.position || '').toLowerCase().includes('kaleci')).sort((a: any,b: any) => b.overall - a.overall);
+
+    const teamA: any[] = [];
+    const teamB: any[] = [];
+    let sumA = 0;
+    let sumB = 0;
+
+    const assignToTeam = (p: any) => {
+       if (teamA.length === teamB.length) {
+          if (sumA <= sumB) { teamA.push(p); sumA += p.overall; }
+          else { teamB.push(p); sumB += p.overall; }
+       } else if (teamA.length < teamB.length) {
+          teamA.push(p); sumA += p.overall;
+       } else {
+          teamB.push(p); sumB += p.overall;
+       }
+    };
+
+    goalkeepers.forEach((p: any) => assignToTeam(p));
+    others.forEach((p: any) => assignToTeam(p));
+
+    res.json({ 
+       teamA,
+       teamB,
+       stats: { 
+          teamA_overall: teamA.length > 0 ? Math.round(sumA/teamA.length) : 0, 
+          teamB_overall: teamB.length > 0 ? Math.round(sumB/teamB.length) : 0 
+       }
+    });
+  } catch (error) {
+    res.status(500).json({ error: 'Öneri oluşturma hatası' });
+  }
+});
+
+app.post('/api/matches/:id/save-teams', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { teamA, teamB } = req.body;
+    
+    if (!Array.isArray(teamA) || !Array.isArray(teamB)) {
+      return res.status(400).json({ error: 'Geçersiz takım listeleri.' });
+    }
+
+    await db.run('UPDATE MatchPlayers SET team = "UNASSIGNED" WHERE matchId = ?', [id]);
+    
+    for (const userId of teamA) {
+      await db.run('UPDATE MatchPlayers SET team = "A" WHERE matchId = ? AND userId = ?', [id, userId]);
+    }
+    for (const userId of teamB) {
+      await db.run('UPDATE MatchPlayers SET team = "B" WHERE matchId = ? AND userId = ?', [id, userId]);
+    }
+
+    res.json({ message: 'Takımlar başarıyla kaydedildi!' });
+  } catch (error) {
+    res.status(500).json({ error: 'Takımları kaydetme hatası' });
   }
 });
 
 app.post('/api/matches/:id/finish', async (req, res) => {
   try {
     const { id } = req.params;
-    const { score, playerGoals } = req.body; // playerGoals: { [userId]: number }
+    const { score, scorers } = req.body;
     
-    await db.run("UPDATE Matches SET status = 'COMPLETED', score = ? WHERE id = ?", [score, id]);
+    await db.run("UPDATE Matches SET status = 'COMPLETED', score = ? WHERE id = ?", [score || null, id]);
     
-    if (playerGoals) {
-      for (const [userId, goals] of Object.entries(playerGoals)) {
-         if ((goals as number) > 0) {
-            await db.run("UPDATE MatchPlayers SET goals = ? WHERE matchId = ? AND userId = ?", [goals, id, userId]);
+    if (Array.isArray(scorers)) {
+      for (const s of scorers) {
+         if (s.goals > 0) {
+            await db.run("UPDATE MatchPlayers SET goals = ? WHERE matchId = ? AND userId = ?", [s.goals, id, s.userId]);
          }
       }
     }
@@ -953,6 +1082,7 @@ app.post('/api/matches/:id/finish', async (req, res) => {
     
     res.json({ message: 'Maç başarıyla tamamlandı.' });
   } catch (error) {
+    console.error('FINISH MATCH ERROR:', error);
     res.status(500).json({ error: 'Maç bitirilirken hata oluştu.' });
   }
 });
@@ -961,10 +1091,15 @@ app.post('/api/matches/:id/finish', async (req, res) => {
 app.get('/api/matches/:id/mvp', async (req, res) => {
   try {
     const { id } = req.params;
-    const votes = await db.all('SELECT voterId, votedId FROM MvpVotes WHERE matchId = ?', [id]);
-    res.json(votes);
+    const votes = await db.all('SELECT votedId, COUNT(*) as voteCount FROM MvpVotes WHERE matchId = ? GROUP BY votedId ORDER BY voteCount DESC LIMIT 1', [id]);
+    if (votes && votes.length > 0) {
+      const mvpId = votes[0].votedId;
+      const mvpUser = await db.get('SELECT id, name, avatar, position FROM User WHERE id = ?', [mvpId]);
+      return res.json({ mvp: { ...mvpUser, voteCount: votes[0].voteCount } });
+    }
+    res.json({ mvp: null });
   } catch (error) {
-    res.status(500).json({ error: 'MVP oyları alınamadı.' });
+    res.status(500).json({ error: 'MVP alınamadı.' });
   }
 });
 
@@ -1037,32 +1172,6 @@ app.post('/api/matches/:id/rate', async (req, res) => {
   }
 });
 
-app.post('/api/matches/:id/finish', async (req, res) => {
-   try {
-     const { id } = req.params;
-     const { score, scorers } = req.body || {};
-     await db.run('UPDATE Matches SET status = "COMPLETED", score = ? WHERE id = ?', [score || null, id]);
-     
-     if (Array.isArray(scorers)) {
-        for (const s of scorers) {
-           if (s.goals > 0) {
-              await db.run('UPDATE MatchPlayers SET goals = ? WHERE matchId = ? AND userId = ?', [s.goals, id, s.userId]);
-           }
-        }
-     }
-
-     // Bildirim at
-     const players = await db.all('SELECT userId FROM MatchPlayers WHERE matchId = ?', [id]);
-     const msg = `Oynadığınız maç tamamlandı. Skor: ${score}. Puanlama yapabilirsiniz!`;
-     for (const p of players) {
-        await db.run('INSERT INTO Notifications (id, userId, message, type) VALUES (?, ?, ?, "MATCH_RESULT")', [Date.now().toString() + Math.random(), p.userId, msg]);
-     }
-
-     res.json({ message: 'Maç tamamlandı olarak işaretlendi!' });
-   } catch (error) {
-     res.status(500).json({ error: 'Hata' });
-   }
-});
 
 app.get('/api/users/:id/stats', async (req, res) => {
   try {
@@ -1100,10 +1209,23 @@ app.get('/api/users/:id/stats', async (req, res) => {
     
     // Generate profile badges dynamically
     const badges = [];
+    const ratingCount = ratings ? ratings.ratingCount : 0;
+
+    // Core achievements
     if (realGoals >= 5) badges.push({ id: 'top_scorer', icon: '⚽', title: 'Gol Makinesi', bg: 'rgba(0, 230, 118, 0.15)' });
     if (numMatches >= 10) badges.push({ id: 'veteran', icon: '🌟', title: 'Müdavim', bg: 'rgba(56, 189, 248, 0.15)' });
     if (mvpVotes > 0) badges.push({ id: 'mvp', icon: '🏆', title: 'Yıldız Oyuncu', bg: 'rgba(255, 193, 7, 0.15)' });
     if (overallScore >= 75) badges.push({ id: 'pro', icon: '🔥', title: 'Pro Kariyer', bg: 'rgba(239, 68, 68, 0.15)' });
+
+    // Fun and dynamic badges
+    if (realGoals >= 15) badges.push({ id: 'golden_boot', icon: '👑', title: 'Altın Ayakkabı', bg: 'rgba(250, 204, 21, 0.15)' });
+    if (numMatches >= 25) badges.push({ id: 'legend', icon: '🪐', title: 'Halı Saha Efsanesi', bg: 'rgba(251, 146, 60, 0.15)' });
+    if (physique >= 78) badges.push({ id: 'defense_minister', icon: '🛡️', title: 'Savunma Bakanı', bg: 'rgba(148, 163, 184, 0.15)' });
+    if (pass >= 78) badges.push({ id: 'maestro', icon: '🪄', title: 'Sihirbaz', bg: 'rgba(168, 85, 247, 0.15)' });
+    if (speed >= 78) badges.push({ id: 'lightning', icon: '⚡', title: 'Fırtına', bg: 'rgba(56, 189, 248, 0.15)' });
+    if (shoot >= 78) badges.push({ id: 'sniper', icon: '🎯', title: 'Keskin Nişancı', bg: 'rgba(244, 63, 94, 0.15)' });
+    if (ratingCount >= 5) badges.push({ id: 'people_hero', icon: '🤝', title: 'Halk Kahramanı', bg: 'rgba(20, 184, 166, 0.15)' });
+    if (physique >= 82 && pass < 65) badges.push({ id: 'gladiator', icon: '⚔️', title: 'Gladyatör (Gattuso)', bg: 'rgba(220, 38, 38, 0.15)' });
 
     res.json({
         matches: numMatches,
