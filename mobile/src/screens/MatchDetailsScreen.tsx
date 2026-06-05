@@ -9,7 +9,8 @@ import {
   TextInput,
   Modal,
   Image,
-  Platform
+  Platform,
+  Linking
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { LinearGradient } from "expo-linear-gradient";
@@ -96,6 +97,10 @@ export default function MatchDetailsScreen({ route, navigation }: any) {
   // Weather
   const [weather, setWeather] = useState<{temp: number, icon: string, desc: string} | null>(null);
 
+  // Map Coordinates
+  const [mapCoords, setMapCoords] = useState<{lat: number, lon: number} | null>(null);
+  const [mapLoading, setMapLoading] = useState(false);
+
   // Müsaitlik önerileri
   const [suggested, setSuggested] = useState<any[]>([]);
 
@@ -159,6 +164,41 @@ export default function MatchDetailsScreen({ route, navigation }: any) {
     }
   };
 
+  const resolveCoords = async (loc: string) => {
+    if (!loc) return;
+    setMapLoading(true);
+    try {
+      // 1. Try to parse direct coordinates "lat, lon"
+      const parts = loc.split(',');
+      if (parts.length === 2) {
+        const lat = parseFloat(parts[0].trim());
+        const lon = parseFloat(parts[1].trim());
+        if (!isNaN(lat) && !isNaN(lon) && lat >= -90 && lat <= 90 && lon >= -180 && lon <= 180) {
+          setMapCoords({ lat, lon });
+          setMapLoading(false);
+          return;
+        }
+      }
+
+      // 2. Otherwise geocode
+      const geoRes = await fetch(`https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(loc)}&count=1`);
+      const geoData = await geoRes.json();
+      if (geoData.results && geoData.results.length > 0) {
+        setMapCoords({
+          lat: geoData.results[0].latitude,
+          lon: geoData.results[0].longitude
+        });
+      } else {
+        // Fallback to default coordinate (Istanbul)
+        setMapCoords({ lat: 41.0082, lon: 28.9784 });
+      }
+    } catch (e) {
+      console.log('Error resolving coordinates:', e);
+      setMapCoords({ lat: 41.0082, lon: 28.9784 });
+    }
+    setMapLoading(false);
+  };
+
   const fetchSuggested = async () => {
     if (!matchInfo.id) return;
     setSuggestedLoading(true);
@@ -190,7 +230,10 @@ export default function MatchDetailsScreen({ route, navigation }: any) {
       fetchMessages();
       fetchSuggested();
       fetchMvp();
-      if (matchInfo.location) fetchWeather(matchInfo.location, String(matchInfo.date || ""));
+      if (matchInfo.location) {
+        fetchWeather(matchInfo.location, String(matchInfo.date || ""));
+        resolveCoords(matchInfo.location);
+      }
     }
   }, [matchInfo.id]);
 
@@ -568,6 +611,116 @@ export default function MatchDetailsScreen({ route, navigation }: any) {
 
 
         </LinearGradient>
+
+        {/* SAHA HARİTASI ENTEGRASYONU */}
+        {matchInfo.location ? (
+          <View style={styles.mapContainerCard}>
+            <View style={styles.mapHeaderRow}>
+              <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                <Ionicons name="map-outline" size={20} color="#00E676" style={{ marginRight: 8 }} />
+                <Text style={styles.mapTitle}>Saha Konumu</Text>
+              </View>
+              {mapCoords && (
+                <TouchableOpacity 
+                  style={styles.directionsBtn} 
+                  onPress={() => {
+                    const latLng = `${mapCoords.lat},${mapCoords.lon}`;
+                    const label = encodeURIComponent(matchInfo.location || "Saha");
+                    const url = Platform.select({
+                      ios: `maps:0,0?q=${label}@${latLng}`,
+                      android: `geo:0,0?q=${latLng}(${label})`,
+                      web: `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(matchInfo.location)}`
+                    });
+                    if (url) Linking.openURL(url);
+                  }}
+                >
+                  <Text style={styles.directionsBtnText}>Yol Tarifi Al 📍</Text>
+                </TouchableOpacity>
+              )}
+            </View>
+
+            {mapLoading ? (
+              <View style={styles.mapPlaceholder}>
+                <Text style={{ color: '#94A3B8' }}>Konum koordinatları alınıyor...</Text>
+              </View>
+            ) : mapCoords ? (
+              Platform.OS === 'web' ? (
+                <View style={styles.mapFrameWrapper}>
+                  <iframe
+                    style={{ width: '100%', height: '100%', borderRadius: 12, border: 'none', filter: 'invert(90%) hue-rotate(180deg) brightness(95%) contrast(90%)' }}
+                    srcDoc={`
+                      <!DOCTYPE html>
+                      <html>
+                      <head>
+                        <meta charset="utf-8" />
+                        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+                        <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+                        <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+                        <style>
+                          html, body, #map {
+                            height: 100%;
+                            margin: 0;
+                            padding: 0;
+                            background-color: #0F172A;
+                          }
+                          .leaflet-popup-content-wrapper {
+                            background-color: #1E293B;
+                            color: #FFF;
+                            border: 1px solid rgba(255,255,255,0.1);
+                            border-radius: 8px;
+                            font-family: system-ui, -apple-system, sans-serif;
+                          }
+                          .leaflet-popup-tip {
+                            background-color: #1E293B;
+                          }
+                        </style>
+                      </head>
+                      <body>
+                        <div id="map"></div>
+                        <script>
+                          var map = L.map('map', {zoomControl: false}).setView([${mapCoords.lat}, ${mapCoords.lon}], 15);
+                          L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+                            maxZoom: 19
+                          }).addTo(map);
+                          var marker = L.marker([${mapCoords.lat}, ${mapCoords.lon}]).addTo(map);
+                          marker.bindPopup("<b style='color:#00E676;'>Maç Sahası</b><br/><span style='font-size:11px;'>${matchInfo.location.replace(/"/g, '&quot;')}</span>").openPopup();
+                        </script>
+                      </body>
+                      </html>
+                    `}
+                  />
+                </View>
+              ) : (
+                <TouchableOpacity 
+                  activeOpacity={0.9} 
+                  style={styles.mobileMapMockCard}
+                  onPress={() => {
+                    const latLng = `${mapCoords.lat},${mapCoords.lon}`;
+                    const label = encodeURIComponent(matchInfo.location || "Saha");
+                    const url = Platform.select({
+                      ios: `maps:0,0?q=${label}@${latLng}`,
+                      android: `geo:0,0?q=${latLng}(${label})`
+                    });
+                    if (url) Linking.openURL(url);
+                  }}
+                >
+                  <LinearGradient 
+                    colors={['rgba(30, 41, 59, 0.9)', 'rgba(15, 23, 42, 0.9)']} 
+                    style={styles.mobileMockInner}
+                  >
+                    <Ionicons name="navigate-circle" size={44} color="#00E676" style={{ marginBottom: 8 }} />
+                    <Text style={styles.mobileMockText}>{String(matchInfo.location)}</Text>
+                    <Text style={styles.mobileMockSub}>Haritalarda açmak için dokunun</Text>
+                  </LinearGradient>
+                </TouchableOpacity>
+              )
+            ) : (
+              <View style={styles.mapPlaceholder}>
+                <Text style={{ color: '#94A3B8' }}>Harita konumu belirlenemedi.</Text>
+              </View>
+            )}
+          </View>
+        ) : null}
 
         {matchStatus === "OPEN" && (
           <View style={styles.suggestSection}>
@@ -1189,5 +1342,82 @@ const styles = StyleSheet.create({
     color: '#F8FAFC',
     fontSize: 8,
     fontWeight: 'bold',
+  },
+  mapContainerCard: {
+    backgroundColor: 'rgba(30, 41, 59, 0.4)',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.05)',
+    borderRadius: 20,
+    padding: 16,
+    marginBottom: 20,
+    marginTop: 15,
+  },
+  mapHeaderRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 12,
+  },
+  mapTitle: {
+    color: '#FFFFFF',
+    fontSize: 16,
+    fontWeight: '800',
+  },
+  directionsBtn: {
+    backgroundColor: 'rgba(0, 230, 118, 0.12)',
+    borderWidth: 1,
+    borderColor: 'rgba(0, 230, 118, 0.3)',
+    borderRadius: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+  },
+  directionsBtnText: {
+    color: '#00E676',
+    fontSize: 12,
+    fontWeight: '800',
+  },
+  mapFrameWrapper: {
+    width: '100%',
+    height: 200,
+    borderRadius: 12,
+    overflow: 'hidden',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.06)',
+  },
+  mapPlaceholder: {
+    width: '100%',
+    height: 150,
+    borderRadius: 12,
+    backgroundColor: 'rgba(0, 0, 0, 0.2)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.05)',
+  },
+  mobileMapMockCard: {
+    width: '100%',
+    height: 160,
+    borderRadius: 12,
+    overflow: 'hidden',
+    borderWidth: 1,
+    borderColor: 'rgba(0, 230, 118, 0.2)',
+  },
+  mobileMockInner: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 20,
+  },
+  mobileMockText: {
+    color: '#FFFFFF',
+    fontSize: 14,
+    fontWeight: 'bold',
+    textAlign: 'center',
+    marginBottom: 4,
+  },
+  mobileMockSub: {
+    color: '#00E676',
+    fontSize: 12,
+    fontWeight: '600',
   }
 });
