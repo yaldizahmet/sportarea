@@ -7,8 +7,9 @@ import { Platform } from "react-native";
 let apiUrl = "";
 
 if (Platform.OS === 'web') {
-  const hostname = typeof window !== 'undefined' ? window.location.hostname : 'localhost';
-  apiUrl = `http://${hostname}:3000/api`;
+  const hostname = typeof window !== 'undefined' ? window.location.hostname : '127.0.0.1';
+  const resolvedHost = hostname === 'localhost' ? '127.0.0.1' : hostname;
+  apiUrl = `http://${resolvedHost}:3000/api`;
 } else {
   const raw =
     typeof process !== "undefined" && process.env?.EXPO_PUBLIC_API_URL
