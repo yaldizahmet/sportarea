@@ -12,6 +12,9 @@ RUN cd server && npm install
 # Copy server source code and database
 COPY server/ ./server/
 
+# Compile TypeScript to JavaScript
+RUN cd server && npm run build
+
 # Expose the port the app runs on
 EXPOSE 3000
 
