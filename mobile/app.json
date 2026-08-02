@@ -5,6 +5,15 @@
     "version": "1.0.0",
     "orientation": "portrait",
     "scheme": "sporarea",
-    "userInterfaceStyle": "dark"
+    "userInterfaceStyle": "dark",
+    "android": {
+      "package": "com.thend.sporarea"
+    },
+    "extra": {
+      "eas": {
+        "projectId": "95651474-2087-4805-9a20-f15db130bddb"
+      }
+    },
+    "owner": "thend"
   }
 }

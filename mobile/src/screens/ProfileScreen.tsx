@@ -249,7 +249,7 @@ export default function ProfileScreen({ navigation, route }: any) {
 
       {/* Avatar Modal */}
       <Modal visible={isAvatarModalVisible} transparent animationType="slide">
-        <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={styles.modalOverlay}>
+        <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.modalOverlay}>
           <View style={styles.modalContent}>
             <Text style={styles.modalTitle}>Profil Resmini Değiştir</Text>
             <View style={styles.modalInputContainer}>

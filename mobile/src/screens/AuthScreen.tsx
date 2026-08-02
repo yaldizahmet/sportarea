@@ -140,7 +140,7 @@ export default function AuthScreen({ navigation }: any) {
       />
 
       <KeyboardAvoidingView 
-        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
         style={styles.contentContainer}
       >
         <Animated.View 
