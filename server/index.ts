@@ -219,6 +219,24 @@ app.get('/', (req, res) => {
   res.send('SporArea API Çalışıyor!');
 });
 
+// Authentication Middleware
+const authenticateToken = (req: any, res: any, next: any) => {
+  if (req.path === '/login' || req.path === '/register' || req.path === '/me') {
+    return next();
+  }
+  const token = req.headers.authorization?.split(' ')[1];
+  if (!token) return res.status(401).json({ error: 'Yetkisiz erişim.' });
+  
+  try {
+    const decoded: any = jwt.verify(token, JWT_SECRET);
+    req.user = decoded; // expects { id: string }
+    next();
+  } catch (err) {
+    res.status(401).json({ error: 'Geçersiz token.' });
+  }
+};
+app.use('/api', authenticateToken);
+
 app.post('/api/register', async (req, res) => {
   try {
     const { name, email, password } = req.body;
@@ -319,7 +337,8 @@ app.get('/api/groups', async (req, res) => {
 
 app.post('/api/groups', async (req, res) => {
   try {
-    const { creatorId, name } = req.body;
+    const { name } = req.body;
+    const creatorId = req.user.id;
     const inviteCode = Math.random().toString(36).substring(2, 8).toUpperCase();
     const groupId = Date.now().toString();
 
@@ -334,7 +353,8 @@ app.post('/api/groups', async (req, res) => {
 
 app.post('/api/groups/join', async (req, res) => {
   try {
-    const { userId, inviteCode } = req.body;
+    const { inviteCode } = req.body;
+    const userId = req.user.id;
     const group = await db.get('SELECT id FROM Groups WHERE inviteCode = ?', [inviteCode]);
     
     if (!group) return res.status(404).json({ error: 'Geçersiz davet kodu' });
@@ -380,7 +400,8 @@ app.get('/api/groups/:id/messages', async (req, res) => {
 app.post('/api/groups/:id/messages', async (req, res) => {
   try {
     const { id } = req.params;
-    const { userId, message } = req.body;
+    const { message } = req.body;
+    const userId = req.user.id;
     await db.run('INSERT INTO GroupMessages (id, groupId, userId, message) VALUES (?, ?, ?, ?)', [
       Date.now().toString(), id, userId, message
     ]);
@@ -413,6 +434,7 @@ app.delete('/api/groups/:id', async (req, res) => {
 });
 
 app.post('/api/users/:id/avatar', async (req, res) => {
+  if (req.params.id !== req.user.id) return res.status(403).json({error: 'Yetkisiz erişim'});
   try {
     const { id } = req.params;
     const { avatar } = req.body;
@@ -424,6 +446,7 @@ app.post('/api/users/:id/avatar', async (req, res) => {
 });
 
 app.post('/api/users/:id/position', async (req, res) => {
+  if (req.params.id !== req.user.id) return res.status(403).json({error: 'Yetkisiz erişim'});
   try {
     const { id } = req.params;
     const { position } = req.body;
@@ -454,6 +477,7 @@ app.get('/api/users/:id/availability', async (req, res) => {
 });
 
 app.post('/api/users/:id/availability', async (req, res) => {
+  if (req.params.id !== req.user.id) return res.status(403).json({error: 'Yetkisiz erişim'});
   try {
     const { id } = req.params;
     const { dayOfWeek, startTime, endTime } = req.body;
@@ -487,6 +511,7 @@ app.post('/api/users/:id/availability', async (req, res) => {
 });
 
 app.delete('/api/users/:id/availability/:availabilityId', async (req, res) => {
+  if (req.params.id !== req.user.id) return res.status(403).json({error: 'Yetkisiz erişim'});
   try {
     const { id, availabilityId } = req.params;
     const user = await db.get('SELECT id FROM User WHERE id = ?', [id]);
@@ -581,7 +606,7 @@ app.get('/api/leaderboard/groups', async (req, res) => {
 // NOTIFICATIONS API
 app.get('/api/notifications', async (req, res) => {
   try {
-    const { userId } = req.query;
+    const userId = req.user.id;
     if (!userId) return res.status(400).json({ error: 'User ID gerekli' });
     const notifications = await db.all('SELECT * FROM Notifications WHERE userId = ? ORDER BY createdAt DESC LIMIT 20', [userId]);
     res.json(notifications);
@@ -592,7 +617,7 @@ app.get('/api/notifications', async (req, res) => {
 
 app.post('/api/notifications/read', async (req, res) => {
   try {
-    const { userId } = req.body;
+    const userId = req.user.id;
     await db.run('UPDATE Notifications SET isRead = 1 WHERE userId = ?', [userId]);
     res.json({ message: 'Tümü okundu' });
   } catch (error) {
@@ -655,7 +680,8 @@ app.get('/api/matches', async (req, res) => {
 
 app.post('/api/matches', async (req, res) => {
   try {
-    const { groupId, creatorId, date, time, location, maxPlayers, teamAName, teamBName, matchTimestamp, lockoutHours } = req.body;
+    const { groupId, date, time, location, maxPlayers, teamAName, teamBName, matchTimestamp, lockoutHours } = req.body;
+    const creatorId = req.user.id;
     const id = Date.now().toString();
     
     await db.run(
@@ -860,7 +886,7 @@ app.get('/api/matches/:id/players', async (req, res) => {
 app.post('/api/matches/:id/join', async (req, res) => {
   try {
     const { id } = req.params;
-    const { userId } = req.body;
+    const userId = req.user.id;
     
     const matchRow = await db.get('SELECT creatorId, location, maxPlayers, matchTimestamp, lockoutHours FROM Matches WHERE id = ?', [id]);
     if (!matchRow) return res.status(404).json({error: 'Maç bulunamadı'});
@@ -898,7 +924,7 @@ app.post('/api/matches/:id/join', async (req, res) => {
 app.post('/api/matches/:id/leave', async (req, res) => {
   try {
     const { id } = req.params;
-    const { userId } = req.body;
+    const userId = req.user.id;
 
     const matchRow = await db.get('SELECT matchTimestamp, lockoutHours, location FROM Matches WHERE id = ?', [id]);
     if (!matchRow) return res.status(404).json({error: 'Maç bulunamadı'});
@@ -1160,7 +1186,8 @@ app.get('/api/matches/:id/messages', async (req, res) => {
 app.post('/api/matches/:id/messages', async (req, res) => {
   try {
     const { id } = req.params;
-    const { userId, message } = req.body;
+    const { message } = req.body;
+    const userId = req.user.id;
     const msgId = Date.now().toString();
     await db.run('INSERT INTO MatchMessages (id, matchId, userId, message) VALUES (?, ?, ?, ?)', [msgId, id, userId, message]);
     res.json({ message: 'Mesaj gönderildi' });
