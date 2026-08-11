@@ -8,7 +8,8 @@ import {
   Animated, 
   KeyboardAvoidingView, 
   Platform,
-  Alert
+  Alert,
+  ScrollView
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
@@ -141,108 +142,115 @@ export default function AuthScreen({ navigation }: any) {
 
       <KeyboardAvoidingView 
         behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-        style={styles.contentContainer}
+        enabled={Platform.OS === 'ios'}
+        style={{ flex: 1 }}
       >
-        <Animated.View 
-          style={[
-            styles.headerContainer, 
-            { opacity: fadeAnim, transform: [{ translateY: slideAnim }] }
-          ]}
+        <ScrollView 
+          contentContainerStyle={styles.contentContainer} 
+          keyboardShouldPersistTaps="handled"
+          showsVerticalScrollIndicator={false}
         >
-          <Animated.View style={[styles.iconContainer, { transform: [{ rotate: spin }] }]}>
-            <Ionicons name="football" size={54} color="#00E676" />
+          <Animated.View 
+            style={[
+              styles.headerContainer, 
+              { opacity: fadeAnim, transform: [{ translateY: slideAnim }] }
+            ]}
+          >
+            <Animated.View style={[styles.iconContainer, { transform: [{ rotate: spin }] }]}>
+              <Ionicons name="football" size={54} color="#00E676" />
+            </Animated.View>
+            <Text style={styles.title}>SporArea</Text>
+            <Text style={styles.subtitle}>Sahanın Hakimi Ol</Text>
           </Animated.View>
-          <Text style={styles.title}>SporArea</Text>
-          <Text style={styles.subtitle}>Sahanın Hakimi Ol</Text>
-        </Animated.View>
 
-        <Animated.View 
-          style={[
-            styles.formContainer,
-            { opacity: fadeAnim, transform: [{ translateY: slideAnim }] }
-          ]}
-        >
-          <View style={[styles.inputContainer, focusedInput === 'email' && styles.inputFocused]}>
-            <Ionicons name="mail-outline" size={20} color={focusedInput === 'email' ? '#00E676' : '#A0A0A0'} style={styles.inputIcon} />
-            <TextInput
-              style={styles.input}
-              placeholder="E-posta"
-              placeholderTextColor="#A0A0A0"
-              value={email}
-              onChangeText={setEmail}
-              keyboardType="email-address"
-              autoCapitalize="none"
-              onFocus={() => setFocusedInput('email')}
-              onBlur={() => setFocusedInput(null)}
-            />
-          </View>
+          <Animated.View 
+            style={[
+              styles.formContainer,
+              { opacity: fadeAnim, transform: [{ translateY: slideAnim }] }
+            ]}
+          >
+            <View style={[styles.inputContainer, focusedInput === 'email' && styles.inputFocused]}>
+              <Ionicons name="mail-outline" size={20} color={focusedInput === 'email' ? '#00E676' : '#A0A0A0'} style={styles.inputIcon} />
+              <TextInput
+                style={styles.input}
+                placeholder="E-posta"
+                placeholderTextColor="#A0A0A0"
+                value={email}
+                onChangeText={setEmail}
+                keyboardType="email-address"
+                autoCapitalize="none"
+                onFocus={() => setFocusedInput('email')}
+                onBlur={() => setFocusedInput(null)}
+              />
+            </View>
 
-          <View style={[styles.inputContainer, focusedInput === 'password' && styles.inputFocused]}>
-            <Ionicons name="lock-closed-outline" size={20} color={focusedInput === 'password' ? '#00E676' : '#A0A0A0'} style={styles.inputIcon} />
-            <TextInput
-              style={styles.input}
-              placeholder="Şifre"
-              placeholderTextColor="#A0A0A0"
-              value={password}
-              onChangeText={setPassword}
-              secureTextEntry
-              onFocus={() => setFocusedInput('password')}
-              onBlur={() => setFocusedInput(null)}
-            />
-          </View>
+            <View style={[styles.inputContainer, focusedInput === 'password' && styles.inputFocused]}>
+              <Ionicons name="lock-closed-outline" size={20} color={focusedInput === 'password' ? '#00E676' : '#A0A0A0'} style={styles.inputIcon} />
+              <TextInput
+                style={styles.input}
+                placeholder="Şifre"
+                placeholderTextColor="#A0A0A0"
+                value={password}
+                onChangeText={setPassword}
+                secureTextEntry
+                onFocus={() => setFocusedInput('password')}
+                onBlur={() => setFocusedInput(null)}
+              />
+            </View>
 
-          {!isLogin && (
-             <View style={[styles.inputContainer, focusedInput === 'name' && styles.inputFocused]}>
-             <Ionicons name="person-outline" size={20} color={focusedInput === 'name' ? '#00E676' : '#A0A0A0'} style={styles.inputIcon} />
-             <TextInput
-               style={styles.input}
-               placeholder="Ad Soyad"
-               placeholderTextColor="#A0A0A0"
-               value={fullName}
-               onChangeText={setFullName}
-               onFocus={() => setFocusedInput('name')}
-               onBlur={() => setFocusedInput(null)}
-             />
-           </View>
-          )}
+            {!isLogin && (
+               <View style={[styles.inputContainer, focusedInput === 'name' && styles.inputFocused]}>
+               <Ionicons name="person-outline" size={20} color={focusedInput === 'name' ? '#00E676' : '#A0A0A0'} style={styles.inputIcon} />
+               <TextInput
+                 style={styles.input}
+                 placeholder="Ad Soyad"
+                 placeholderTextColor="#A0A0A0"
+                 value={fullName}
+                 onChangeText={setFullName}
+                 onFocus={() => setFocusedInput('name')}
+                 onBlur={() => setFocusedInput(null)}
+               />
+             </View>
+            )}
 
-          <TouchableOpacity style={styles.forgotPassword}>
-            {isLogin && <Text style={styles.forgotText}>Şifremi Unuttum</Text>}
-          </TouchableOpacity>
+            <TouchableOpacity style={styles.forgotPassword}>
+              {isLogin && <Text style={styles.forgotText}>Şifremi Unuttum</Text>}
+            </TouchableOpacity>
 
-          <Animated.View style={{ transform: [{ scale: buttonScale }] }}>
-            <TouchableOpacity 
-              activeOpacity={0.8} 
-              onPress={handleAuth} 
-              disabled={loading}
-              onPressIn={() => Animated.spring(buttonScale, { toValue: 0.95, useNativeDriver: true }).start()}
-              onPressOut={() => Animated.spring(buttonScale, { toValue: 1, useNativeDriver: true }).start()}
-            >
-              <LinearGradient
-                colors={['#00C853', '#B2FF59']}
-                start={{x: 0, y: 0}}
-                end={{x: 1, y: 0}}
-                style={[styles.button, loading && { opacity: 0.7 }]}
+            <Animated.View style={{ transform: [{ scale: buttonScale }] }}>
+              <TouchableOpacity 
+                activeOpacity={0.8} 
+                onPress={handleAuth} 
+                disabled={loading}
+                onPressIn={() => Animated.spring(buttonScale, { toValue: 0.95, useNativeDriver: true }).start()}
+                onPressOut={() => Animated.spring(buttonScale, { toValue: 1, useNativeDriver: true }).start()}
               >
-                <Text style={styles.buttonText}>{loading ? 'YÜKLENİYOR...' : (isLogin ? 'GİRİŞ YAP' : 'KAYIT OL')}</Text>
-              </LinearGradient>
-            </TouchableOpacity>
-          </Animated.View>
+                <LinearGradient
+                  colors={['#00C853', '#B2FF59']}
+                  start={{x: 0, y: 0}}
+                  end={{x: 1, y: 0}}
+                  style={[styles.button, loading && { opacity: 0.7 }]}
+                >
+                  <Text style={styles.buttonText}>{loading ? 'YÜKLENİYOR...' : (isLogin ? 'GİRİŞ YAP' : 'KAYIT OL')}</Text>
+                </LinearGradient>
+              </TouchableOpacity>
+            </Animated.View>
 
-          <View style={styles.switchContainer}>
-            <Text style={styles.switchLabel}>
-              {isLogin ? "Hesabın yok mu? " : "Zaten üye misin? "}
-            </Text>
-            <TouchableOpacity onPress={() => {
-                fadeAnim.setValue(0);
-                slideAnim.setValue(20);
-                setIsLogin(!isLogin);
-                setFullName('');
-              }}>
-              <Text style={styles.switchButton}>{isLogin ? "Yeni Kayıt" : "Giriş Yap"}</Text>
-            </TouchableOpacity>
-          </View>
-        </Animated.View>
+            <View style={styles.switchContainer}>
+              <Text style={styles.switchLabel}>
+                {isLogin ? "Hesabın yok mu? " : "Zaten üye misin? "}
+              </Text>
+              <TouchableOpacity onPress={() => {
+                  fadeAnim.setValue(0);
+                  slideAnim.setValue(20);
+                  setIsLogin(!isLogin);
+                  setFullName('');
+                }}>
+                <Text style={styles.switchButton}>{isLogin ? "Yeni Kayıt" : "Giriş Yap"}</Text>
+              </TouchableOpacity>
+            </View>
+          </Animated.View>
+        </ScrollView>
       </KeyboardAvoidingView>
     </View>
   );
@@ -254,7 +262,7 @@ const styles = StyleSheet.create({
     backgroundColor: '#121212',
   },
   contentContainer: {
-    flex: 1,
+    flexGrow: 1,
     justifyContent: 'center',
     paddingHorizontal: 30,
   },
