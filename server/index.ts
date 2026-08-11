@@ -717,7 +717,7 @@ app.get('/api/matches/:id/players', async (req, res) => {
    try {
      const { id } = req.params;
      const players = await db.all(`
-        SELECT User.id, User.name, User.avatar, User.role as position, MatchPlayers.team, MatchPlayers.goals, MatchPlayers.status 
+        SELECT User.id, User.name, User.avatar, User.position, MatchPlayers.team, MatchPlayers.goals, MatchPlayers.status 
         FROM MatchPlayers 
         JOIN User ON MatchPlayers.userId = User.id 
         WHERE MatchPlayers.matchId = ?
@@ -726,7 +726,7 @@ app.get('/api/matches/:id/players', async (req, res) => {
       const matchRow = await db.get('SELECT groupId, creatorId FROM Matches WHERE id = ?', [id]);
       if (matchRow && matchRow.groupId) {
          const groupMembers = await db.all(`
-            SELECT User.id, User.name, User.avatar, User.role as position 
+            SELECT User.id, User.name, User.avatar, User.position 
             FROM GroupMembers 
             JOIN User ON GroupMembers.userId = User.id 
             WHERE GroupMembers.groupId = ?
