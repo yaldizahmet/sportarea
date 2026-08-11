@@ -841,81 +841,11 @@ app.post('/api/matches/:id/leave', async (req, res) => {
   }
 });
 
-app.post('/api/matches/:id/divide', async (req, res) => {
-  try {
-    const { id } = req.params;
-    const players = await db.all(`
-      SELECT User.id, User.position
-      FROM MatchPlayers 
-      JOIN User ON MatchPlayers.userId = User.id 
-      WHERE MatchPlayers.matchId = ? AND MatchPlayers.status = 'ACTIVE'
-    `, [id]);
 
-    if(players.length < 2) return res.status(400).json({ error: 'Takım kurmak için yeterli oyuncu yok.' });
-
-    // Her oyuncunun overall rating'ini hesapla
+async function balanceTeams(players: any[]) {
     for (const p of players) {
        const ratings = await db.get('SELECT AVG(speed) as s, AVG(shoot) as sh, AVG(pass) as pa, AVG(physique) as ph FROM Ratings WHERE ratedId = ?', [p.id]);
        p.overall = 65; // default average
-       if (ratings && ratings.s !== null) {
-          p.overall = (ratings.s + ratings.sh + ratings.pa + ratings.ph) / 4;
-       }
-    }
-
-    // Mevkilere ayırıp yeteneğe göre büyükten küçüğe sırala
-    const goalkeepers = players.filter((p: any) => (p.position || '').toLowerCase().includes('kaleci')).sort((a: any,b: any) => b.overall - a.overall);
-    const others = players.filter((p: any) => !(p.position || '').toLowerCase().includes('kaleci')).sort((a: any,b: any) => b.overall - a.overall);
-
-    const teamA: any[] = [];
-    const teamB: any[] = [];
-    let sumA = 0;
-    let sumB = 0;
-
-    const assignToTeam = (p: any, forceBalance = false) => {
-       if (teamA.length === teamB.length) {
-          if (sumA <= sumB) { teamA.push(p); sumA += p.overall; }
-          else { teamB.push(p); sumB += p.overall; }
-       } else if (teamA.length < teamB.length) {
-          teamA.push(p); sumA += p.overall;
-       } else {
-          teamB.push(p); sumB += p.overall;
-       }
-    };
-
-    // Önce kalecileri akıllı dağıt
-    goalkeepers.forEach((p: any) => assignToTeam(p));
-    // Sonra kalanları dağıt
-    others.forEach((p: any) => assignToTeam(p));
-
-    await db.run('UPDATE MatchPlayers SET team = "UNASSIGNED" WHERE matchId = ?', [id]);
-    
-    for (const p of teamA) await db.run('UPDATE MatchPlayers SET team = "A" WHERE matchId = ? AND userId = ?', [id, p.id]);
-    for (const p of teamB) await db.run('UPDATE MatchPlayers SET team = "B" WHERE matchId = ? AND userId = ?', [id, p.id]);
-
-    res.json({ 
-       message: 'Takımlar zekice kalibre edildi!', 
-       stats: { teamA_overall: Math.round(sumA/teamA.length), teamB_overall: Math.round(sumB/teamB.length) }
-     });
-  } catch (error) {
-    res.status(500).json({ error: 'Bölme hatası' });
-  }
-});
-
-app.get('/api/matches/:id/suggest-teams', async (req, res) => {
-  try {
-    const { id } = req.params;
-    const players = await db.all(`
-      SELECT User.id, User.name, User.avatar, User.position
-      FROM MatchPlayers 
-      JOIN User ON MatchPlayers.userId = User.id 
-      WHERE MatchPlayers.matchId = ? AND MatchPlayers.status = 'ACTIVE'
-    `, [id]);
-
-    if(players.length < 2) return res.status(400).json({ error: 'Takım kurmak için yeterli oyuncu yok.' });
-
-    for (const p of players) {
-       const ratings = await db.get('SELECT AVG(speed) as s, AVG(shoot) as sh, AVG(pass) as pa, AVG(physique) as ph FROM Ratings WHERE ratedId = ?', [p.id]);
-       p.overall = 65;
        if (ratings && ratings.s !== null) {
           p.overall = Math.round((ratings.s + ratings.sh + ratings.pa + ratings.ph) / 4);
        }
@@ -943,14 +873,55 @@ app.get('/api/matches/:id/suggest-teams', async (req, res) => {
     goalkeepers.forEach((p: any) => assignToTeam(p));
     others.forEach((p: any) => assignToTeam(p));
 
-    res.json({ 
-       teamA,
-       teamB,
+    return { 
+       teamA, 
+       teamB, 
        stats: { 
-          teamA_overall: teamA.length > 0 ? Math.round(sumA/teamA.length) : 0, 
-          teamB_overall: teamB.length > 0 ? Math.round(sumB/teamB.length) : 0 
-       }
-    });
+           teamA_overall: teamA.length > 0 ? Math.round(sumA/teamA.length) : 0, 
+           teamB_overall: teamB.length > 0 ? Math.round(sumB/teamB.length) : 0 
+       } 
+    };
+}
+
+app.post('/api/matches/:id/divide', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const players = await db.all(`
+      SELECT User.id, User.position
+      FROM MatchPlayers 
+      JOIN User ON MatchPlayers.userId = User.id 
+      WHERE MatchPlayers.matchId = ? AND MatchPlayers.status = 'ACTIVE'
+    `, [id]);
+
+    if(players.length < 2) return res.status(400).json({ error: 'Takım kurmak için yeterli oyuncu yok.' });
+
+    const { teamA, teamB, stats } = await balanceTeams(players);
+
+    await db.run('UPDATE MatchPlayers SET team = "UNASSIGNED" WHERE matchId = ?', [id]);
+    
+    for (const p of teamA) await db.run('UPDATE MatchPlayers SET team = "A" WHERE matchId = ? AND userId = ?', [id, p.id]);
+    for (const p of teamB) await db.run('UPDATE MatchPlayers SET team = "B" WHERE matchId = ? AND userId = ?', [id, p.id]);
+
+    res.json({ message: 'Takımlar zekice kalibre edildi!', stats });
+  } catch (error) {
+    res.status(500).json({ error: 'Bölme hatası' });
+  }
+});
+
+app.get('/api/matches/:id/suggest-teams', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const players = await db.all(`
+      SELECT User.id, User.name, User.avatar, User.position
+      FROM MatchPlayers 
+      JOIN User ON MatchPlayers.userId = User.id 
+      WHERE MatchPlayers.matchId = ? AND MatchPlayers.status = 'ACTIVE'
+    `, [id]);
+
+    if(players.length < 2) return res.status(400).json({ error: 'Takım kurmak için yeterli oyuncu yok.' });
+
+    const result = await balanceTeams(players);
+    res.json(result);
   } catch (error) {
     res.status(500).json({ error: 'Öneri oluşturma hatası' });
   }
