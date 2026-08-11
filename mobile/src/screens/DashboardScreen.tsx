@@ -1,3 +1,4 @@
+import { apiFetch } from '../utils/api';
 import React, { useState, useEffect } from "react";
 import {
   StyleSheet,
@@ -111,10 +112,10 @@ export default function DashboardScreen({ route, navigation }: any) {
 
   const fetchData = async () => {
     try {
-      const myMatchRes = await fetch(`${API_URL}/matches?userId=${user.id}&type=my`);
-      const pubMatchRes = await fetch(`${API_URL}/matches?userId=${user.id}&type=public`);
-      const groupRes = await fetch(`${API_URL}/groups?userId=${user.id}`);
-      const notifRes = await fetch(`${API_URL}/notifications?userId=${user.id}`);
+      const myMatchRes = await apiFetch(`${API_URL}/matches?userId=${user.id}&type=my`);
+      const pubMatchRes = await apiFetch(`${API_URL}/matches?userId=${user.id}&type=public`);
+      const groupRes = await apiFetch(`${API_URL}/groups?userId=${user.id}`);
+      const notifRes = await apiFetch(`${API_URL}/notifications?userId=${user.id}`);
       const myData = await myMatchRes.json();
       const pubData = await pubMatchRes.json();
       const gData = await groupRes.json();
@@ -131,7 +132,7 @@ export default function DashboardScreen({ route, navigation }: any) {
   const handleOpenNotifications = async () => {
     setIsNotificationsVisible(true);
     try {
-      await fetch(`${API_URL}/notifications/read`, { method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({ userId: user.id }) });
+      await apiFetch(`${API_URL}/notifications/read`, { method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({ }) });
       setNotifications(prev => prev.map(n => ({...n, isRead: 1})));
     } catch(e) {}
   };
@@ -189,11 +190,10 @@ export default function DashboardScreen({ route, navigation }: any) {
           matchTimestamp = dObj.getTime();
       }
 
-      const response = await fetch(`${API_URL}/matches`, {
+      const response = await apiFetch(`${API_URL}/matches`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          creatorId: user.id || null,
           groupId: selectedGroup,
           date: `${selectedDate}, ${selectedTime}`,
           time: selectedTime,
@@ -229,11 +229,10 @@ export default function DashboardScreen({ route, navigation }: any) {
     }
 
     try {
-      const response = await fetch(`${API_URL}/groups`, {
+      const response = await apiFetch(`${API_URL}/groups`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          creatorId: user.id || null,
           name: groupName,
         }),
       });
@@ -259,11 +258,10 @@ export default function DashboardScreen({ route, navigation }: any) {
     }
 
     try {
-      const response = await fetch(`${API_URL}/groups/join`, {
+      const response = await apiFetch(`${API_URL}/groups/join`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          userId: user.id || null,
           inviteCode: inviteCode.toUpperCase(),
         }),
       });
@@ -283,15 +281,15 @@ export default function DashboardScreen({ route, navigation }: any) {
     try {
       if(n.metadata) {
          const meta = JSON.parse(n.metadata);
-         const res = await fetch(`${API_URL}/matches/${meta.matchId}/join`, {
+         const res = await apiFetch(`${API_URL}/matches/${meta.matchId}/join`, {
            method: "POST",
            headers: { "Content-Type": "application/json" },
-           body: JSON.stringify({ userId: user.id })
+           body: JSON.stringify({ })
          });
          const data = await res.json();
          
          if (res.ok) {
-           await fetch(`${API_URL}/notifications/${n.id}`, { method: "DELETE" });
+           await apiFetch(`${API_URL}/notifications/${n.id}`, { method: "DELETE" });
            setNotifications(prev => prev.filter(x => x.id !== n.id));
            Alert.alert("Başarılı", data.message || "Maça katıldınız!");
            fetchData();
@@ -304,7 +302,7 @@ export default function DashboardScreen({ route, navigation }: any) {
 
   const handleRejectMatchInvite = async (n: any) => {
     try {
-      await fetch(`${API_URL}/notifications/${n.id}`, { method: "DELETE" });
+      await apiFetch(`${API_URL}/notifications/${n.id}`, { method: "DELETE" });
       setNotifications(prev => prev.filter(x => x.id !== n.id));
     } catch(e) {}
   };

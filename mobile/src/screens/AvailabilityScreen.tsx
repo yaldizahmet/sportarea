@@ -1,3 +1,4 @@
+import { apiFetch } from '../utils/api';
 import React, { useState, useEffect, useCallback } from "react";
 import {
   StyleSheet,
@@ -27,7 +28,6 @@ const DAYS: { label: string; value: number }[] = [
 
 type AvailabilityRow = {
   id: string;
-  userId: string;
   dayOfWeek: number;
   startTime: string;
   endTime: string;
@@ -49,7 +49,7 @@ export default function AvailabilityScreen({ route, navigation }: any) {
     if (!userId) return;
     setLoading(true);
     try {
-      const res = await fetch(`${API_URL}/users/${userId}/availability`);
+      const res = await apiFetch(`${API_URL}/users/${userId}/availability`);
       const data = await res.json();
       if (Array.isArray(data)) {
         setRows(data);
@@ -70,7 +70,7 @@ export default function AvailabilityScreen({ route, navigation }: any) {
       return;
     }
     try {
-      const res = await fetch(`${API_URL}/users/${userId}/availability`, {
+      const res = await apiFetch(`${API_URL}/users/${userId}/availability`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ dayOfWeek, startTime, endTime }),
@@ -93,7 +93,7 @@ export default function AvailabilityScreen({ route, navigation }: any) {
     if (!userId) return;
     const go = async () => {
       try {
-        const res = await fetch(`${API_URL}/users/${userId}/availability/${id}`, {
+        const res = await apiFetch(`${API_URL}/users/${userId}/availability/${id}`, {
           method: "DELETE",
         });
         const data = await res.json();

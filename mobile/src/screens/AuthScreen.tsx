@@ -1,3 +1,4 @@
+import { apiFetch } from '../utils/api';
 import React, { useState, useRef, useEffect } from 'react';
 import { 
   StyleSheet, 
@@ -71,7 +72,7 @@ export default function AuthScreen({ navigation }: any) {
       try {
         const token = await AsyncStorage.getItem('userToken');
         if (token) {
-          const res = await fetch(`${API_URL}/me`, {
+          const res = await apiFetch(`${API_URL}/me`, {
             headers: { Authorization: `Bearer ${token}` }
           });
           const data = await res.json();
@@ -97,7 +98,7 @@ export default function AuthScreen({ navigation }: any) {
         ? { email, password } 
         : { name: fullName, email, password };
 
-      const response = await fetch(endpoint, {
+      const response = await apiFetch(endpoint, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',

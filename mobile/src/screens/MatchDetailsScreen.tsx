@@ -1,3 +1,4 @@
+import { apiFetch } from '../utils/api';
 import React, { useState, useEffect } from "react";
 import {
   StyleSheet,
@@ -29,7 +30,7 @@ const getCoordinates = (team: any[], isTeamA: boolean) => {
   // Anyone else is mid
   const mid = team.filter((p: any) => !gk.includes(p) && !def.includes(p) && !fwd.includes(p));
 
-  const coords: { [userId: string]: { x: number; y: number } } = {};
+  const coords: { [id: string]: { x: number, y: number } } = {};
 
   const assignCoordsForRole = (playersList: any[], yVal: number) => {
     const count = playersList.length;
@@ -83,7 +84,7 @@ export default function MatchDetailsScreen({ route, navigation }: any) {
   const [finishModalVisible, setFinishModalVisible] = useState(false);
   const [scoreA, setScoreA] = useState('');
   const [scoreB, setScoreB] = useState('');
-  const [playerGoals, setPlayerGoals] = useState<{[userId: string]: number}>({});
+  const [playerGoals, setPlayerGoals] = useState<{ [id: string]: number }>({});
 
   // Rating
   const [ratingModalVisible, setRatingModalVisible] = useState(false);
@@ -203,7 +204,7 @@ export default function MatchDetailsScreen({ route, navigation }: any) {
     if (!matchInfo.id) return;
     setSuggestedLoading(true);
     try {
-      const res = await fetch(`${API_URL}/matches/${matchInfo.id}/suggested-players`);
+      const res = await apiFetch(`${API_URL}/matches/${matchInfo.id}/suggested-players`);
       const data = await res.json();
       if (res.ok) {
         setSuggested(Array.isArray(data.suggested) ? data.suggested : []);
@@ -239,7 +240,7 @@ export default function MatchDetailsScreen({ route, navigation }: any) {
 
   const fetchMatchInfo = async () => {
     try {
-      const res = await fetch(`${API_URL}/matches/${matchInfo.id}`);
+      const res = await apiFetch(`${API_URL}/matches/${matchInfo.id}`);
       const data = await res.json();
       if (data.status) setMatchStatus(data.status);
       if (data.score) setMatchScore(data.score);
@@ -249,7 +250,7 @@ export default function MatchDetailsScreen({ route, navigation }: any) {
 
   const fetchMvp = async () => {
     try {
-      const res = await fetch(`${API_URL}/matches/${matchInfo.id}/mvp`);
+      const res = await apiFetch(`${API_URL}/matches/${matchInfo.id}/mvp`);
       const data = await res.json();
       if (data.mvp) setMatchMvp(data.mvp);
     } catch(e) {}
@@ -257,7 +258,7 @@ export default function MatchDetailsScreen({ route, navigation }: any) {
 
   const fetchPlayers = async () => {
     try {
-      const res = await fetch(`${API_URL}/matches/${matchInfo.id}/players`);
+      const res = await apiFetch(`${API_URL}/matches/${matchInfo.id}/players`);
       const data = await res.json();
       if (Array.isArray(data)) {
         setPlayers(data);
@@ -271,7 +272,7 @@ export default function MatchDetailsScreen({ route, navigation }: any) {
 
   const fetchMessages = async () => {
     try {
-      const res = await fetch(`${API_URL}/matches/${matchInfo.id}/messages`);
+      const res = await apiFetch(`${API_URL}/matches/${matchInfo.id}/messages`);
       const data = await res.json();
       if(Array.isArray(data)) setMessages(data);
     } catch(e) {}
@@ -280,10 +281,10 @@ export default function MatchDetailsScreen({ route, navigation }: any) {
   const handleSendMessage = async () => {
     if(!newMessage.trim()) return;
     try {
-       await fetch(`${API_URL}/matches/${matchInfo.id}/messages`, {
+       await apiFetch(`${API_URL}/matches/${matchInfo.id}/messages`, {
          method: 'POST',
          headers: {'Content-Type': 'application/json'},
-         body: JSON.stringify({ userId: user.id, message: newMessage })
+         body: JSON.stringify({ message: newMessage })
        });
        setNewMessage('');
        fetchMessages();
@@ -294,7 +295,7 @@ export default function MatchDetailsScreen({ route, navigation }: any) {
     try {
       const finalScore = (scoreA && scoreB) ? `${scoreA} - ${scoreB}` : '';
       const scorersData = Object.entries(playerGoals).map(([userId, goals]) => ({userId, goals}));
-      const res = await fetch(`${API_URL}/matches/${matchInfo.id}/finish`, { 
+      const res = await apiFetch(`${API_URL}/matches/${matchInfo.id}/finish`, { 
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({ score: finalScore, scorers: scorersData })
@@ -328,11 +329,10 @@ export default function MatchDetailsScreen({ route, navigation }: any) {
   const submitRating = async () => {
     if(!ratingTarget) return;
     try {
-       const res = await fetch(`${API_URL}/matches/${matchInfo.id}/rate`, {
+       const res = await apiFetch(`${API_URL}/matches/${matchInfo.id}/rate`, {
          method: 'POST',
          headers: {'Content-Type': 'application/json'},
          body: JSON.stringify({ 
-            raterId: user.id, 
             ratedId: ratingTarget.id,
             speed: ratingScores.speed,
             shoot: ratingScores.shoot,
@@ -352,7 +352,7 @@ export default function MatchDetailsScreen({ route, navigation }: any) {
 
   const submitMvpVote = async (votedId: string) => {
     try {
-      const res = await fetch(`${API_URL}/matches/${matchInfo.id}/mvp`, {
+      const res = await apiFetch(`${API_URL}/matches/${matchInfo.id}/mvp`, {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({ voterId: user.id, votedId })
@@ -373,10 +373,10 @@ export default function MatchDetailsScreen({ route, navigation }: any) {
   const leaveMatch = async () => {
     setLoading(true);
     try {
-      const res = await fetch(`${API_URL}/matches/${matchInfo.id}/leave`, {
+      const res = await apiFetch(`${API_URL}/matches/${matchInfo.id}/leave`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ userId: user.id }),
+        body: JSON.stringify({ }),
       });
       const data = await res.json();
       if(res.ok) {
@@ -406,10 +406,10 @@ export default function MatchDetailsScreen({ route, navigation }: any) {
     } else {
       setLoading(true);
       try {
-        const res = await fetch(`${API_URL}/matches/${matchInfo.id}/join`, {
+        const res = await apiFetch(`${API_URL}/matches/${matchInfo.id}/join`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ userId: user.id }),
+          body: JSON.stringify({ }),
         });
         const data = await res.json();
         if (res.ok) {
@@ -429,7 +429,7 @@ export default function MatchDetailsScreen({ route, navigation }: any) {
   const handleCancelMatch = async () => {
     const performCancel = async () => {
       try {
-        const res = await fetch(`${API_URL}/matches/${matchInfo.id}`, {
+        const res = await apiFetch(`${API_URL}/matches/${matchInfo.id}`, {
           method: "DELETE"
         });
         const data = await res.json();
@@ -462,7 +462,7 @@ export default function MatchDetailsScreen({ route, navigation }: any) {
 
   const handleDivideTeams = async () => {
     try {
-      const res = await fetch(`${API_URL}/matches/${matchInfo.id}/suggest-teams`);
+      const res = await apiFetch(`${API_URL}/matches/${matchInfo.id}/suggest-teams`);
       const data = await res.json();
       if (res.ok) {
         setSuggestedTeamA(data.teamA || []);
@@ -480,7 +480,7 @@ export default function MatchDetailsScreen({ route, navigation }: any) {
   const handleApplySuggestedTeams = async () => {
     setSaveTeamsLoading(true);
     try {
-      const res = await fetch(`${API_URL}/matches/${matchInfo.id}/save-teams`, {
+      const res = await apiFetch(`${API_URL}/matches/${matchInfo.id}/save-teams`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({

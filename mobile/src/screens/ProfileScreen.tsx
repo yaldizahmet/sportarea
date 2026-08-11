@@ -1,3 +1,4 @@
+import { apiFetch } from '../utils/api';
 import React, { useState, useEffect } from 'react';
 import { 
   StyleSheet, 
@@ -50,7 +51,7 @@ export default function ProfileScreen({ navigation, route }: any) {
 
   const handleUpdatePosition = async (pos: string) => {
     try {
-      const res = await fetch(`${API_URL}/users/${user.id}/position`, {
+      const res = await apiFetch(`${API_URL}/users/${user.id}/position`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ position: pos })
@@ -66,7 +67,7 @@ export default function ProfileScreen({ navigation, route }: any) {
 
   const handleUpdateAvatar = async () => {
     try {
-      const res = await fetch(`${API_URL}/users/${user.id}/avatar`, {
+      const res = await apiFetch(`${API_URL}/users/${user.id}/avatar`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ avatar: tempAvatarUrl })

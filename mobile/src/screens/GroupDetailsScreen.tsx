@@ -1,3 +1,4 @@
+import { apiFetch } from '../utils/api';
 import React, { useState, useEffect } from 'react';
 import { 
   StyleSheet, 
@@ -37,7 +38,7 @@ export default function GroupDetailsScreen({ route, navigation }: any) {
 
   const fetchMembers = async () => {
     try {
-      const res = await fetch(`${API_URL}/groups/${group.id}/members`);
+      const res = await apiFetch(`${API_URL}/groups/${group.id}/members`);
       const data = await res.json();
       if(Array.isArray(data)) {
         setMembers(data);
@@ -49,7 +50,7 @@ export default function GroupDetailsScreen({ route, navigation }: any) {
 
   const fetchMessages = async () => {
     try {
-      const res = await fetch(`${API_URL}/groups/${group.id}/messages`);
+      const res = await apiFetch(`${API_URL}/groups/${group.id}/messages`);
       const data = await res.json();
       if(Array.isArray(data)) setMessages(data);
     } catch(e) {}
@@ -58,10 +59,10 @@ export default function GroupDetailsScreen({ route, navigation }: any) {
   const sendMessage = async () => {
     if(!newMessage.trim()) return;
     try {
-       await fetch(`${API_URL}/groups/${group.id}/messages`, {
+       await apiFetch(`${API_URL}/groups/${group.id}/messages`, {
          method: 'POST',
          headers: {'Content-Type': 'application/json'},
-         body: JSON.stringify({ userId: user.id, message: newMessage })
+         body: JSON.stringify({ message: newMessage })
        });
        setNewMessage('');
        fetchMessages();
@@ -81,7 +82,7 @@ export default function GroupDetailsScreen({ route, navigation }: any) {
   const handleCancelGroup = async () => {
     const performCancel = async () => {
       try {
-        const res = await fetch(`${API_URL}/groups/${group.id}`, {
+        const res = await apiFetch(`${API_URL}/groups/${group.id}`, {
           method: "DELETE"
         });
         const data = await res.json();

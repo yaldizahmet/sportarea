@@ -1,3 +1,4 @@
+import { apiFetch } from '../utils/api';
 import React, { useState, useEffect } from 'react';
 import { 
   StyleSheet, 
@@ -28,7 +29,7 @@ export default function LeaderboardScreen({ navigation, route }: any) {
 
   const fetchLeaderboard = async () => {
     try {
-      const res = await fetch(`${API_URL}/leaderboard`);
+      const res = await apiFetch(`${API_URL}/leaderboard`);
       let data = await res.json();
       if(Array.isArray(data)) {
         data.sort((a,b) => b.score - a.score);
@@ -36,7 +37,7 @@ export default function LeaderboardScreen({ navigation, route }: any) {
       }
       
       if(user?.id) {
-         const grpRes = await fetch(`${API_URL}/leaderboard/groups?userId=${user.id}`);
+         const grpRes = await apiFetch(`${API_URL}/leaderboard/groups?userId=${user.id}`);
          let grpData = await grpRes.json();
          if(Array.isArray(grpData)) {
             grpData.sort((a: any,b: any) => b.score - a.score);
