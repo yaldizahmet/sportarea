@@ -615,6 +615,27 @@ app.get('/api/matches', async (req, res) => {
   try {
     const { userId } = req.query;
     if (userId) {
+      if (req.query.type === 'public') {
+        const matches = await db.all(`
+          SELECT DISTINCT m.*, g.name as groupName 
+          FROM Matches m
+          LEFT JOIN Groups g ON m.groupId = g.id
+          WHERE m.groupId IS NULL
+        `);
+        return res.json(matches);
+      } else if (req.query.type === 'my') {
+        const matches = await db.all(`
+          SELECT DISTINCT m.*, g.name as groupName 
+          FROM Matches m
+          LEFT JOIN Groups g ON m.groupId = g.id
+          LEFT JOIN MatchPlayers mp ON m.id = mp.matchId
+          LEFT JOIN GroupMembers gm ON m.groupId = gm.groupId
+          WHERE mp.userId = ? OR gm.userId = ?
+        `, [userId, userId]);
+        return res.json(matches);
+      }
+
+      // Default (all relevant matches)
       const matches = await db.all(`
         SELECT DISTINCT m.*, g.name as groupName 
         FROM Matches m

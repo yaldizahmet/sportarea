@@ -22,7 +22,9 @@ export default function DashboardScreen({ route, navigation }: any) {
   const user = route.params?.user || { name: "Oyuncu", id: "tempId" };
 
   // Veriler
-  const [matches, setMatches] = useState<any[]>([]);
+  const [myMatches, setMyMatches] = useState<any[]>([]);
+  const [publicMatches, setPublicMatches] = useState<any[]>([]);
+  const [matchTab, setMatchTab] = useState<'my' | 'public'>('my');
   const [groups, setGroups] = useState<any[]>([]);
   const [notifications, setNotifications] = useState<any[]>([]);
   
@@ -109,13 +111,16 @@ export default function DashboardScreen({ route, navigation }: any) {
 
   const fetchData = async () => {
     try {
-      const matchRes = await fetch(`${API_URL}/matches?userId=${user.id}`);
+      const myMatchRes = await fetch(`${API_URL}/matches?userId=${user.id}&type=my`);
+      const pubMatchRes = await fetch(`${API_URL}/matches?userId=${user.id}&type=public`);
       const groupRes = await fetch(`${API_URL}/groups?userId=${user.id}`);
       const notifRes = await fetch(`${API_URL}/notifications?userId=${user.id}`);
-      const mData = await matchRes.json();
+      const myData = await myMatchRes.json();
+      const pubData = await pubMatchRes.json();
       const gData = await groupRes.json();
       const nData = await notifRes.json();
-      if (Array.isArray(mData)) setMatches(mData);
+      if (Array.isArray(myData)) setMyMatches(myData);
+      if (Array.isArray(pubData)) setPublicMatches(pubData);
       if (Array.isArray(gData)) setGroups(gData);
       if (Array.isArray(nData)) setNotifications(nData);
     } catch (e) {
@@ -304,6 +309,8 @@ export default function DashboardScreen({ route, navigation }: any) {
     } catch(e) {}
   };
 
+  const currentMatches = matchTab === 'my' ? myMatches : publicMatches;
+
   return (
     <SafeAreaView style={styles.safeArea}>
       <StatusBar style="light" />
@@ -374,14 +381,23 @@ export default function DashboardScreen({ route, navigation }: any) {
             </TouchableOpacity>
           </View>
 
+          <View style={styles.tabContainer}>
+            <TouchableOpacity onPress={() => setMatchTab('my')} style={[styles.tab, matchTab === 'my' && styles.activeTab]}>
+              <Text style={matchTab === 'my' ? styles.activeTabText : styles.tabText}>Maçlarım</Text>
+            </TouchableOpacity>
+            <TouchableOpacity onPress={() => setMatchTab('public')} style={[styles.tab, matchTab === 'public' && styles.activeTab]}>
+              <Text style={matchTab === 'public' ? styles.activeTabText : styles.tabText}>Keşfet</Text>
+            </TouchableOpacity>
+          </View>
+
           <View style={styles.sectionHeader}>
-            <Text style={styles.sectionTitle}>Yaklaşan Maçlar</Text>
+            <Text style={styles.sectionTitle}>{matchTab === 'my' ? 'Yaklaşan Maçlarım' : 'Yaklaşan Açık Maçlar'}</Text>
             <TouchableOpacity onPress={fetchData}>
               <Text style={styles.seeAllText}>Yenile</Text>
             </TouchableOpacity>
           </View>
 
-          {matches.filter(m => m.status !== 'COMPLETED').length === 0 ? (
+          {currentMatches.filter(m => m.status !== 'COMPLETED').length === 0 ? (
             <Text
               style={{
                 color: "#A0A0A0",
@@ -392,7 +408,7 @@ export default function DashboardScreen({ route, navigation }: any) {
               Yaklaşan maç bulunmuyor.
             </Text>
           ) : (
-            matches.filter(m => m.status !== 'COMPLETED').map((match, index) => (
+            currentMatches.filter(m => m.status !== 'COMPLETED').map((match, index) => (
               <TouchableOpacity
                 key={`upcoming-${index}`}
                 activeOpacity={0.8}
@@ -431,12 +447,12 @@ export default function DashboardScreen({ route, navigation }: any) {
             <Text style={styles.sectionTitle}>Geçmiş Maçlar</Text>
           </View>
 
-          {matches.filter(m => m.status === 'COMPLETED').length === 0 ? (
+          {currentMatches.filter(m => m.status === 'COMPLETED').length === 0 ? (
             <Text style={{color: "#A0A0A0", textAlign: "center", marginVertical: 20}}>
               Henüz tamamlanmış maç yok.
             </Text>
           ) : (
-            matches.filter(m => m.status === 'COMPLETED').map((match, index) => (
+            currentMatches.filter(m => m.status === 'COMPLETED').map((match, index) => (
               <TouchableOpacity
                 key={`completed-${index}`}
                 activeOpacity={0.8}
@@ -1482,5 +1498,36 @@ const styles = StyleSheet.create({
   miniBadgeText: {
     fontSize: 11,
     fontWeight: "600",
+  },
+  tabContainer: {
+    flexDirection: 'row',
+    marginBottom: 20,
+    backgroundColor: 'rgba(255, 255, 255, 0.05)',
+    borderRadius: 20,
+    padding: 4,
+  },
+  tab: {
+    flex: 1,
+    paddingVertical: 10,
+    alignItems: 'center',
+    borderRadius: 16,
+  },
+  activeTab: {
+    backgroundColor: '#0F172A',
+    shadowColor: '#00E676',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.2,
+    shadowRadius: 8,
+    elevation: 4,
+  },
+  tabText: {
+    color: '#94A3B8',
+    fontSize: 14,
+    fontWeight: 'bold',
+  },
+  activeTabText: {
+    color: '#00E676',
+    fontSize: 14,
+    fontWeight: 'bold',
   },
 });
