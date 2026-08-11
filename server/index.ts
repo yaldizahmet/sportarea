@@ -1,15 +1,21 @@
 import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';
-import sqlite3 from 'sqlite3';
-import { open } from 'sqlite';
-import path from 'path';
+import { db, initDB } from './db';
 import { randomUUID } from 'node:crypto';
 import jwt from 'jsonwebtoken';
 import bcrypt from 'bcryptjs';
 
 const JWT_SECRET = process.env.JWT_SECRET || 'sporarea-super-secret-key-2026';
 const BCRYPT_SALT_ROUNDS = 12;
+
+declare global {
+  namespace Express {
+    interface Request {
+      user?: any;
+    }
+  }
+}
 
 const app = express();
 app.use(cors());
@@ -56,164 +62,11 @@ const matchDayAndMinutesFromRow = (match: any): { dayOfWeek: number; matchMinute
   return { dayOfWeek, matchMinutes };
 };
 
-// Initialize Native SQLite DB
-let db: any;
-(async () => {
-  db = await open({
-    filename: path.join(__dirname, 'sports.db'),
-    driver: sqlite3.Database
-  });
-  
-  await db.exec(`
-    CREATE TABLE IF NOT EXISTS User (
-      id TEXT PRIMARY KEY,
-      name TEXT NOT NULL,
-      email TEXT UNIQUE NOT NULL,
-      password TEXT NOT NULL,
-      role TEXT DEFAULT 'PLAYER',
-      createdAt DATETIME DEFAULT CURRENT_TIMESTAMP
-    );
-
-    CREATE TABLE IF NOT EXISTS Groups (
-      id TEXT PRIMARY KEY,
-      name TEXT NOT NULL,
-      inviteCode TEXT UNIQUE NOT NULL,
-      creatorId TEXT,
-      createdAt DATETIME DEFAULT CURRENT_TIMESTAMP
-    );
-
-    CREATE TABLE IF NOT EXISTS GroupMembers (
-      groupId TEXT,
-      userId TEXT,
-      joinedAt DATETIME DEFAULT CURRENT_TIMESTAMP,
-      PRIMARY KEY (groupId, userId)
-    );
-
-    CREATE TABLE IF NOT EXISTS Matches (
-      id TEXT PRIMARY KEY,
-      groupId TEXT,
-      creatorId TEXT,
-      date TEXT NOT NULL,
-      time TEXT NOT NULL,
-      location TEXT NOT NULL,
-      maxPlayers INTEGER NOT NULL,
-      status TEXT DEFAULT 'OPEN',
-      createdAt DATETIME DEFAULT CURRENT_TIMESTAMP
-    );
-
-      CREATE TABLE IF NOT EXISTS MatchPlayers (
-        matchId TEXT,
-        userId TEXT,
-        team TEXT DEFAULT 'UNASSIGNED', 
-        joinedAt DATETIME DEFAULT CURRENT_TIMESTAMP,
-        PRIMARY KEY (matchId, userId)
-      );
-
-      CREATE TABLE IF NOT EXISTS MatchMessages (
-        id TEXT PRIMARY KEY,
-        matchId TEXT,
-        userId TEXT,
-        message TEXT,
-        createdAt DATETIME DEFAULT CURRENT_TIMESTAMP
-      );
-
-      CREATE TABLE IF NOT EXISTS Ratings (
-        id TEXT PRIMARY KEY,
-        matchId TEXT,
-        raterId TEXT,
-        ratedId TEXT,
-        speed INTEGER,
-        shoot INTEGER,
-        pass INTEGER,
-        physique INTEGER,
-        createdAt DATETIME DEFAULT CURRENT_TIMESTAMP
-      );
-    `);
-    
-    try {
-      await db.exec(`ALTER TABLE User ADD COLUMN avatar TEXT;`);
-    } catch (e) {}
-
-    try {
-      await db.exec(`ALTER TABLE User ADD COLUMN position TEXT DEFAULT 'Orta Saha';`);
-    } catch (e) {}
-
-    try {
-      await db.exec(`ALTER TABLE Matches ADD COLUMN status TEXT DEFAULT 'OPEN';`);
-    } catch (e) {}
-
-    try {
-      await db.exec(`ALTER TABLE Matches ADD COLUMN score TEXT;`);
-    } catch (e) {}
-
-    try {
-      await db.exec(`ALTER TABLE MatchPlayers ADD COLUMN goals INTEGER DEFAULT 0;`);
-    } catch (e) {}
-
-    try {
-      await db.exec(`ALTER TABLE Matches ADD COLUMN teamAName TEXT DEFAULT 'A Takımı';`);
-      await db.exec(`ALTER TABLE Matches ADD COLUMN teamBName TEXT DEFAULT 'B Takımı';`);
-    } catch (e) {}
-    try {
-      await db.exec(`ALTER TABLE Notifications ADD COLUMN metadata TEXT;`);
-    } catch (e) {}
-
-    try {
-      await db.exec(`ALTER TABLE Matches ADD COLUMN matchTimestamp INTEGER;`);
-      await db.exec(`ALTER TABLE Matches ADD COLUMN lockoutHours INTEGER DEFAULT 1;`);
-    } catch (e) {}
-    
-    try {
-      await db.exec(`ALTER TABLE MatchPlayers ADD COLUMN status TEXT DEFAULT 'ACTIVE';`);
-    } catch (e) {}
-
-    await db.exec(`
-      CREATE TABLE IF NOT EXISTS Notifications (
-        id TEXT PRIMARY KEY,
-        userId TEXT NOT NULL,
-        message TEXT NOT NULL,
-        type TEXT DEFAULT 'INFO',
-        isRead BOOLEAN DEFAULT 0,
-        createdAt DATETIME DEFAULT CURRENT_TIMESTAMP
-      )
-    `);
-
-    await db.exec(`
-      CREATE TABLE IF NOT EXISTS MvpVotes (
-        id TEXT PRIMARY KEY,
-        matchId TEXT NOT NULL,
-        voterId TEXT NOT NULL,
-        votedId TEXT NOT NULL,
-        createdAt DATETIME DEFAULT CURRENT_TIMESTAMP
-      )
-    `);
-
-    await db.exec(`
-      CREATE TABLE IF NOT EXISTS GroupMessages (
-        id TEXT PRIMARY KEY,
-        groupId TEXT NOT NULL,
-        userId TEXT NOT NULL,
-        message TEXT NOT NULL,
-        createdAt DATETIME DEFAULT CURRENT_TIMESTAMP
-      )
-    `);
-
-    await db.exec(`
-      CREATE TABLE IF NOT EXISTS UserAvailability (
-        id TEXT PRIMARY KEY,
-        userId TEXT NOT NULL,
-        dayOfWeek INTEGER NOT NULL,
-        startTime TEXT NOT NULL,
-        endTime TEXT NOT NULL,
-        isActive INTEGER NOT NULL DEFAULT 1,
-        createdAt DATETIME DEFAULT CURRENT_TIMESTAMP
-      );
-      CREATE INDEX IF NOT EXISTS idx_user_availability_user_day
-        ON UserAvailability (userId, dayOfWeek);
-    `);
-
-    console.log('Database connected and schemas initialized.');
-})();
+// Initialize DB
+initDB().catch(err => {
+  console.error('Failed to initialize database:', err);
+  process.exit(1);
+});
 
 app.get('/', (req, res) => {
   res.send('SporArea API Çalışıyor!');
