@@ -288,6 +288,9 @@ app.post('/api/groups/:id/messages', async (req, res) => {
 app.delete('/api/groups/:id', async (req, res) => {
   try {
     const { id } = req.params;
+    const group = await db.get('SELECT creatorId FROM Groups WHERE id = ?', [id]);
+    if (!group) return res.status(404).json({ error: 'Grup bulunamadı.' });
+    if (group.creatorId !== req.user.id) return res.status(403).json({ error: 'Bu grubu silme yetkiniz yok.' });
     
     // Grubu sil
     await db.run('DELETE FROM Groups WHERE id = ?', [id]);
@@ -502,6 +505,10 @@ app.post('/api/notifications/read', async (req, res) => {
 app.delete('/api/notifications/:id', async (req, res) => {
   try {
     const { id } = req.params;
+    const notif = await db.get('SELECT userId FROM Notifications WHERE id = ?', [id]);
+    if (!notif) return res.status(404).json({ error: 'Bildirim bulunamadı.' });
+    if (notif.userId !== req.user.id) return res.status(403).json({ error: 'Yetkisiz erişim.' });
+
     await db.run('DELETE FROM Notifications WHERE id = ?', [id]);
     res.json({ message: 'Bildirim silindi' });
   } catch (error) {
@@ -693,6 +700,7 @@ app.delete('/api/matches/:id', async (req, res) => {
     const { id } = req.params;
     const match = await db.get('SELECT * FROM Matches WHERE id = ?', [id]);
     if (!match) return res.status(404).json({ error: 'Maç bulunamadı.' });
+    if (match.creatorId !== req.user.id) return res.status(403).json({ error: 'Bu maçı silme yetkiniz yok.' });
 
     await db.run('DELETE FROM MatchPlayers WHERE matchId = ?', [id]);
     await db.run('DELETE FROM MvpVotes WHERE matchId = ?', [id]);
