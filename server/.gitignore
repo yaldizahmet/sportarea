@@ -2,4 +2,20 @@ node_modules
 # Keep environment variables out of version control
 .env
 
-/generated/prisma
+# Build artifacts
+*.js
+*.map
+!prisma.config.js
+
+# Logs and debug files
+*.log
+*.txt
+err*.txt
+
+# IDEs and OS
+.vscode/
+.DS_Store
+
+# Dead database files
+dev.db
+sporarea.db

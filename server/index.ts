@@ -6,7 +6,11 @@ import { randomUUID } from 'node:crypto';
 import jwt from 'jsonwebtoken';
 import bcrypt from 'bcryptjs';
 
-const JWT_SECRET = process.env.JWT_SECRET || 'sporarea-super-secret-key-2026';
+if (!process.env.JWT_SECRET) {
+  console.error('FATAL ERROR: JWT_SECRET is not defined in environment variables.');
+  process.exit(1);
+}
+const JWT_SECRET = process.env.JWT_SECRET;
 const BCRYPT_SALT_ROUNDS = 12;
 
 declare global {
@@ -17,9 +21,26 @@ declare global {
   }
 }
 
+import rateLimit from 'express-rate-limit';
+
 const app = express();
-app.use(cors());
+
+// Secure CORS: restrict origins in production
+const allowedOrigins = process.env.NODE_ENV === 'production' 
+  ? ['https://sportarea.onrender.com'] // add your frontend domain here
+  : '*'; // allow all in dev
+
+app.use(cors({ origin: allowedOrigins }));
 app.use(express.json());
+
+// Rate limiters for auth
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 10, // Limit each IP to 10 requests per windowMs
+  message: { error: 'Çok fazla deneme yaptınız, lütfen 15 dakika sonra tekrar deneyin.' }
+});
+
+// We will apply this limiter directly in the routes below
 
 const toSafeUser = (user: any) => {
   if (!user) return user;
@@ -90,7 +111,7 @@ const authenticateToken = (req: any, res: any, next: any) => {
 };
 app.use('/api', authenticateToken);
 
-app.post('/api/register', async (req, res) => {
+app.post('/api/register', authLimiter, async (req, res) => {
   try {
     const { name, email, password } = req.body;
     if (!name || !email || !password) {
@@ -104,9 +125,9 @@ app.post('/api/register', async (req, res) => {
 
     const id = Date.now().toString();
     const hashedPassword = await bcrypt.hash(password, BCRYPT_SALT_ROUNDS);
-    await db.run('INSERT INTO User (id, name, email, password, role) VALUES (?, ?, ?, ?, ?)', [id, name, email, hashedPassword, 'ORGANIZER']);
+    await db.run('INSERT INTO User (id, name, email, password, role) VALUES (?, ?, ?, ?, ?)', [id, name, email, hashedPassword, 'PLAYER']);
     
-    const user = { id, name, email, role: 'ORGANIZER' };
+    const user = { id, name, email, role: 'PLAYER' };
     const token = jwt.sign({ id }, JWT_SECRET, { expiresIn: '30d' });
     
     res.json({ message: 'Kayıt başarılı!', user, token });
@@ -116,7 +137,7 @@ app.post('/api/register', async (req, res) => {
   }
 });
 
-app.post('/api/login', async (req, res) => {
+app.post('/api/login', authLimiter, async (req, res) => {
   try {
     const { email, password } = req.body;
     if (!email || !password) {
@@ -551,7 +572,7 @@ app.post('/api/matches', async (req, res) => {
       const members = await db.all('SELECT userId FROM GroupMembers WHERE groupId = ? AND userId != ?', [groupId, creatorId || '']);
       for (const m of members) {
          await db.run('INSERT INTO Notifications (id, userId, message, type, metadata) VALUES (?, ?, ?, ?, ?)', [
-           Date.now().toString() + Math.random(),
+           randomUUID(),
            m.userId,
            `${groupData?.name || 'Bir grup'} grubuna yeni bir maç daveti geldi! Kabul ediyor musun?`,
            'MATCH_INVITE',
@@ -762,7 +783,7 @@ app.post('/api/matches/:id/join', async (req, res) => {
     // Bildirim
     if (matchRow.creatorId && matchRow.creatorId !== userId) {
        await db.run('INSERT INTO Notifications (id, userId, message, type) VALUES (?, ?, ?, ?)', [
-         Date.now().toString() + Math.random(),
+         randomUUID(),
          matchRow.creatorId,
          `Bir oyuncu ${matchRow.location} maçına ${isReserve ? 'yedek olarak ' : ''}katıldı!`,
          'JOIN'
@@ -798,7 +819,7 @@ app.post('/api/matches/:id/leave', async (req, res) => {
          await db.run("UPDATE MatchPlayers SET status = 'ACTIVE' WHERE matchId = ? AND userId = ?", [id, firstReserve.userId]);
          
          await db.run('INSERT INTO Notifications (id, userId, message, type) VALUES (?, ?, ?, ?)', [
-           Date.now().toString() + Math.random(),
+           randomUUID(),
            firstReserve.userId,
            `Müjde! ${matchRow?.location} maçında bir kişilik yer açıldı ve yedeğe alındığın listede AS KADROYA yükseldin!`,
            'INFO'
@@ -970,7 +991,7 @@ app.post('/api/matches/:id/finish', async (req, res) => {
     const matchRow = await db.get('SELECT location FROM Matches WHERE id = ?', [id]);
     for(const p of players) {
        await db.run('INSERT INTO Notifications (id, userId, message, type) VALUES (?, ?, ?, ?)', [
-         Date.now().toString() + Math.random(),
+         randomUUID(),
          p.userId,
          `${matchRow?.location || 'Maç'} tamamlandı! İstatistiklerin işlendi. Hemen detaylara göz atabilir ve oyuncuları puanlayabilirsin.`,
          'MATCH_RESULT'
@@ -1011,7 +1032,7 @@ app.post('/api/matches/:id/mvp', async (req, res) => {
        return res.status(400).json({ error: 'Zaten MVP oyu kullandınız!' });
     }
     
-    const voteId = Date.now().toString() + Math.random().toString().slice(2, 5);
+    const voteId = randomUUID();
     await db.run('INSERT INTO MvpVotes (id, matchId, voterId, votedId) VALUES (?, ?, ?, ?)', [voteId, id, voterId, votedId]);
     res.json({ message: 'MVP oyunuz kaydedildi!' });
   } catch (error) {
