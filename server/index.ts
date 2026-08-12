@@ -24,6 +24,7 @@ declare global {
 import rateLimit from 'express-rate-limit';
 
 const app = express();
+app.set('trust proxy', 1); // Render proxy IP pass-through for rate-limiter
 
 // Secure CORS: restrict origins in production
 const allowedOrigins = process.env.NODE_ENV === 'production' 
