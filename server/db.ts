@@ -173,10 +173,5 @@ export async function initDB() {
   }
 
   console.log('Database connected and migrations successfully applied.');
-  
-  // Acil durum şifre sıfırlama (Render üzerindeki persistent disk için)
-  await db.run("UPDATE User SET password = '123456' WHERE email = 'aybergkartal@mynet.com'");
-  console.log('Admin password forcibly reset for aybergkartal@mynet.com');
-  
   return db;
 }
