@@ -22,12 +22,21 @@ create table sportarea."Groups" (
   name text not null,
   "inviteCode" text not null unique,
   "creatorId" text references sportarea."User"(id) on delete set null,
+  -- Haftalık otomatik maç (hepsi boşsa kapalı). weeklyDay: 0=Pazar ... 6=Cumartesi.
+  -- 06:00'dan önceki saatler o günün gecesi sayılır (Çarşamba 00:00 = Çarşamba'yı Perşembe'ye bağlayan gece).
+  "weeklyDay" integer check ("weeklyDay" between 0 and 6),
+  "weeklyTime" text,
+  "weeklyLocation" text,
+  "weeklyMaxPlayers" integer,
+  "weeklyLockoutHours" integer,
   "createdAt" timestamptz not null default now()
 );
 
 create table sportarea."GroupMembers" (
   "groupId" text not null references sportarea."Groups"(id) on delete cascade,
   "userId" text not null references sportarea."User"(id) on delete cascade,
+  -- "Her hafta varım": açılan her haftalık maçta otomatik kadroya girer.
+  "alwaysIn" boolean not null default false,
   "joinedAt" timestamptz not null default now(),
   primary key ("groupId", "userId")
 );
@@ -61,24 +70,6 @@ create table sportarea."MatchPlayers" (
   primary key ("matchId", "userId")
 );
 create index on sportarea."MatchPlayers" ("userId");
-
-create table sportarea."MatchMessages" (
-  id text primary key,
-  "matchId" text not null references sportarea."Matches"(id) on delete cascade,
-  "userId" text not null references sportarea."User"(id) on delete cascade,
-  message text not null,
-  "createdAt" timestamptz not null default now()
-);
-create index on sportarea."MatchMessages" ("matchId");
-
-create table sportarea."GroupMessages" (
-  id text primary key,
-  "groupId" text not null references sportarea."Groups"(id) on delete cascade,
-  "userId" text not null references sportarea."User"(id) on delete cascade,
-  message text not null,
-  "createdAt" timestamptz not null default now()
-);
-create index on sportarea."GroupMessages" ("groupId");
 
 -- Bir oyuncu, bir maçta aynı kişiyi bir kez puanlar (tekrar puanlarsa güncellenir).
 create table sportarea."Ratings" (
@@ -116,17 +107,6 @@ create table sportarea."MvpVotes" (
   unique ("matchId", "voterId")
 );
 
-create table sportarea."UserAvailability" (
-  id text primary key,
-  "userId" text not null references sportarea."User"(id) on delete cascade,
-  "dayOfWeek" integer not null check ("dayOfWeek" between 0 and 6),
-  "startTime" text not null,
-  "endTime" text not null,
-  "isActive" integer not null default 1,
-  "createdAt" timestamptz not null default now()
-);
-create index on sportarea."UserAvailability" ("userId", "dayOfWeek");
-
 -- Güvenlik: Shajka'nın tarayıcıya açık anahtarları (anon/authenticated) bu şemaya erişemez.
 revoke all on schema sportarea from public, anon, authenticated;
 
@@ -146,8 +126,8 @@ alter role sportarea_app set search_path = sportarea;
 do $$
 declare t text;
 begin
-  foreach t in array array['User','Groups','GroupMembers','Matches','MatchPlayers','MatchMessages',
-                           'GroupMessages','Ratings','Notifications','MvpVotes','UserAvailability'] loop
+  foreach t in array array['User','Groups','GroupMembers','Matches','MatchPlayers',
+                           'Ratings','Notifications','MvpVotes'] loop
     execute format('alter table sportarea.%I enable row level security', t);
     execute format('create policy server_all on sportarea.%I for all to sportarea_app using (true) with check (true)', t);
   end loop;
@@ -167,3 +147,8 @@ create index on sportarea."MatchResponses" ("userId");
 grant select, insert, update, delete on sportarea."MatchResponses" to sportarea_app;
 alter table sportarea."MatchResponses" enable row level security;
 create policy server_all on sportarea."MatchResponses" for all to sportarea_app using (true) with check (true);
+
+-- v3: Haftalık maç kolonları (Groups.weekly*) ve GroupMembers."alwaysIn" yukarıdaki tanımlara eklendi.
+-- Sohbet ve müsaitlik özellikleri kaldırıldı. Canlı veritabanında boş "MatchMessages", "GroupMessages"
+-- ve "UserAvailability" tabloları hâlâ duruyor; kod artık bunları kullanmıyor, istenirse silinebilir:
+--   drop table sportarea."MatchMessages", sportarea."GroupMessages", sportarea."UserAvailability";

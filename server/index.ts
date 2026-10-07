@@ -31,7 +31,8 @@ const allowedOrigins = process.env.NODE_ENV === 'production'
   : '*'; // allow all in dev
 
 app.use(cors({ origin: allowedOrigins }));
-app.use(express.json());
+// Profil fotoğrafı küçültülmüş base64 olarak geliyor (birkaç on KB); 1 MB fazlasıyla yeter.
+app.use(express.json({ limit: '1mb' }));
 
 // Rate limiters for auth
 const authLimiter = rateLimit({
@@ -46,57 +47,130 @@ const toSafeUser = (user: any) => {
   return safeUser;
 };
 
-const timeToMinutes = (t: string): number | null => {
-  if (typeof t !== 'string' || !t.trim()) return null;
-  const p = t.trim().split(':');
-  const h = parseInt(p[0] ?? '0', 10);
-  const m = parseInt((p[1] ?? '0').replace(/\D.*/, '').slice(0, 2) || '0', 10);
-  if (Number.isNaN(h) || Number.isNaN(m) || h < 0 || h > 23 || m < 0 || m > 59) return null;
-  return h * 60 + m;
-};
-
-const isMinutesInWindow = (matchMin: number, start: string, end: string): boolean => {
-  const s = timeToMinutes(start);
-  const e = timeToMinutes(end);
-  if (s === null || e === null) return false;
-  if (s <= e) {
-    return matchMin >= s && matchMin <= e;
-  }
-  return matchMin >= s || matchMin <= e;
-};
-
-const matchDayAndMinutesFromRow = (match: any): { dayOfWeek: number; matchMinutes: number } | null => {
-  let dayOfWeek: number;
-  if (match.matchTimestamp && Number(match.matchTimestamp) > 0) {
-    const d = new Date(Number(match.matchTimestamp));
-    if (Number.isNaN(d.getTime())) return null;
-    dayOfWeek = d.getDay();
-  } else {
-    const d = new Date(String(match.date));
-    if (Number.isNaN(d.getTime())) return null;
-    dayOfWeek = d.getDay();
-  }
-  const matchMinutes = timeToMinutes(String(match.time ?? '12:00'));
-  if (matchMinutes === null) return null;
-  return { dayOfWeek, matchMinutes };
-};
-
 const isLockedOut = (match: any) => {
   if (!(Number(match.matchTimestamp) > 0) || match.lockoutHours === null) return false;
   const lockoutMs = match.lockoutHours * 60 * 60 * 1000;
   return Date.now() > Number(match.matchTimestamp) - lockoutMs;
 };
 
-// Maçı yönetme yetkisi: maçı kuran kişi ya da ORGANIZER rolündeki kullanıcı
-// (mobil arayüzdeki kuralın aynısı).
+// Maçı yönetme yetkisi (takım kurma, bitirme, iptal): maçı kuran kişi ya da grubun kurucusu.
+// Haftalık otomatik maçlarda maçı "kuran" grup kurucusudur.
 const canManageMatch = async (matchId: string, userId: string) => {
   const row = await db.get(
-    `SELECT m."creatorId", u.role FROM "Matches" m LEFT JOIN "User" u ON u.id = ? WHERE m.id = ?`,
-    [userId, matchId]
+    `SELECT m."creatorId", g."creatorId" AS "groupCreatorId"
+     FROM "Matches" m LEFT JOIN "Groups" g ON g.id = m."groupId"
+     WHERE m.id = ?`,
+    [matchId]
   );
   if (!row) return { exists: false, allowed: false };
-  return { exists: true, allowed: row.creatorId === userId || row.role === 'ORGANIZER' };
+  return { exists: true, allowed: row.creatorId === userId || row.groupCreatorId === userId };
 };
+
+// ---- Haftalık maç zamanlaması ----
+// Türkiye yıl boyu UTC+3; sunucu (Render) UTC çalıştığı için hesaplar sabit +3 ile yapılır.
+const TR_OFFSET_MS = 3 * 60 * 60 * 1000;
+const DAY_SHORT = ['Paz', 'Pzt', 'Sal', 'Çar', 'Per', 'Cum', 'Cmt'];
+
+const parseHHMM = (t: string) => {
+  const m = /^(\d{1,2}):(\d{2})$/.exec(String(t ?? '').trim());
+  if (!m) return null;
+  const h = Number(m[1]), min = Number(m[2]);
+  if (h > 23 || min > 59) return null;
+  return { h, min };
+};
+
+// Haftanın günü (0=Pazar) ve saat verildiğinde, şu andan sonraki ilk maç zamanı.
+// 06:00'dan önceki saatler o günün gecesi sayılır: "Çarşamba 00:00" = Çarşamba'yı Perşembe'ye bağlayan gece.
+function nextWeeklyOccurrence(dayOfWeek: number, time: string, nowMs = Date.now()) {
+  const t = parseHHMM(time);
+  if (!t) return null;
+  const nightShift = t.h < 6 ? 1 : 0;
+  const nowTr = new Date(nowMs + TR_OFFSET_MS);
+  for (let k = 0; k <= 14; k++) {
+    const day = new Date(Date.UTC(nowTr.getUTCFullYear(), nowTr.getUTCMonth(), nowTr.getUTCDate() + k));
+    if (day.getUTCDay() !== dayOfWeek) continue;
+    const ts = Date.UTC(day.getUTCFullYear(), day.getUTCMonth(), day.getUTCDate() + nightShift, t.h, t.min) - TR_OFFSET_MS;
+    if (ts > nowMs) {
+      return {
+        ts,
+        // Eski uygulama sürümleri maç kartında bu metni gösteriyor.
+        label: `${day.getUTCDate()}/${day.getUTCMonth() + 1} ${DAY_SHORT[dayOfWeek]}, ${time}`,
+      };
+    }
+  }
+  return null;
+}
+
+// Grubun haftalık maç ayarı varsa ve ileri tarihli bir maçı yoksa, sıradakini açar.
+// "Her hafta varım" diyen üyeler kadroya otomatik eklenir, diğerlerine davet gider.
+// Zamanlayıcı yerine uygulama açıldıkça çağrılır: Render'ın ücretsiz sunucusu uykudayken iş kaçmaz.
+async function ensureUpcomingMatch(groupId: string) {
+  return tx(async (t) => {
+    // Aynı anda iki istek gelirse aynı maç iki kez açılmasın.
+    await t.run('SELECT pg_advisory_xact_lock(hashtext(?))', [groupId]);
+
+    const g = await t.get(
+      `SELECT id, name, "creatorId", "weeklyDay", "weeklyTime", "weeklyLocation", "weeklyMaxPlayers", "weeklyLockoutHours"
+       FROM "Groups" WHERE id = ?`,
+      [groupId]
+    );
+    if (!g || g.weeklyDay === null || !g.weeklyTime || !g.weeklyLocation) return null;
+
+    const upcoming = await t.get(
+      'SELECT id FROM "Matches" WHERE "groupId" = ? AND "matchTimestamp" > ? LIMIT 1',
+      [groupId, Date.now()]
+    );
+    if (upcoming) return null;
+
+    const next = nextWeeklyOccurrence(g.weeklyDay, g.weeklyTime);
+    if (!next) return null;
+
+    const matchId = randomUUID();
+    const maxPlayers = g.weeklyMaxPlayers || 14;
+    await t.run(
+      `INSERT INTO "Matches" (id, "groupId", "creatorId", date, time, location, "maxPlayers", "matchTimestamp", "lockoutHours")
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [matchId, groupId, g.creatorId, next.label, g.weeklyTime, g.weeklyLocation, maxPlayers, next.ts, g.weeklyLockoutHours ?? 3]
+    );
+
+    const members = await t.all(
+      `SELECT "userId", "alwaysIn" FROM "GroupMembers" WHERE "groupId" = ? ORDER BY "joinedAt" ASC`,
+      [groupId]
+    );
+    let filled = 0;
+    for (const m of members) {
+      if (m.alwaysIn) {
+        const status = filled < maxPlayers ? 'ACTIVE' : 'RESERVE';
+        filled++;
+        await t.run('INSERT INTO "MatchPlayers" ("matchId", "userId", status) VALUES (?, ?, ?)', [matchId, m.userId, status]);
+        await t.run('INSERT INTO "Notifications" (id, "userId", message, type, metadata) VALUES (?, ?, ?, ?, ?)', [
+          randomUUID(), m.userId,
+          `${g.name}: haftalık maç açıldı (${next.label}). "Her hafta varım" dediğin için ${status === 'ACTIVE' ? 'kadroya' : 'yedek listesine'} eklendin. Gelemeyeceksen maç sayfasından "Yokum" de.`,
+          'INFO', JSON.stringify({ matchId })
+        ]);
+      } else {
+        await t.run('INSERT INTO "Notifications" (id, "userId", message, type, metadata) VALUES (?, ?, ?, ?, ?)', [
+          randomUUID(), m.userId,
+          `${g.name}: haftalık maç açıldı (${next.label}, ${g.weeklyLocation}). Geliyor musun?`,
+          'MATCH_INVITE', JSON.stringify({ matchId })
+        ]);
+      }
+    }
+    return matchId;
+  });
+}
+
+// Kullanıcının tüm gruplarında sıradaki haftalık maçın açık olduğundan emin olur.
+async function ensureUpcomingMatchesForUser(userId: string) {
+  const groups = await db.all(
+    `SELECT g.id FROM "Groups" g JOIN "GroupMembers" gm ON gm."groupId" = g.id
+     WHERE gm."userId" = ? AND g."weeklyDay" IS NOT NULL`,
+    [userId]
+  );
+  for (const g of groups) {
+    try { await ensureUpcomingMatch(g.id); } catch (err) { console.error('Weekly match error:', err); }
+  }
+}
 
 const isUniqueViolation = (err: any) => err && err.code === '23505';
 
@@ -248,11 +322,37 @@ app.post('/api/groups/join', async (req, res) => {
   }
 });
 
+const isGroupMember = async (groupId: string, userId: string) =>
+  Boolean(await db.get('SELECT 1 FROM "GroupMembers" WHERE "groupId" = ? AND "userId" = ?', [groupId, userId]));
+
+// Grup sayfası: grup bilgisi, haftalık maç ayarı, benim "her hafta varım" durumum ve sayılar.
+app.get('/api/groups/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    if (!(await isGroupMember(id, req.user.id))) return res.status(403).json({ error: 'Bu grubun üyesi değilsiniz.' });
+    await ensureUpcomingMatch(id).catch((err) => console.error('Weekly match error:', err));
+
+    const group = await db.get(`
+      SELECT g.*,
+        (SELECT COUNT(*) FROM "GroupMembers" WHERE "groupId" = g.id) AS "memberCount",
+        (SELECT COUNT(*) FROM "Matches" WHERE "groupId" = g.id AND status = 'COMPLETED') AS "matchCount",
+        (SELECT "alwaysIn" FROM "GroupMembers" WHERE "groupId" = g.id AND "userId" = ?) AS "myAlwaysIn"
+      FROM "Groups" g WHERE g.id = ?
+    `, [req.user.id, id]);
+    res.json(group);
+  } catch (e) {
+    res.status(500).json({ error: 'Grup bilgisi alınamadı.' });
+  }
+});
+
 app.get('/api/groups/:id/members', async (req, res) => {
   try {
     const { id } = req.params;
+    if (!(await isGroupMember(id, req.user.id))) return res.status(403).json({ error: 'Bu grubun üyesi değilsiniz.' });
     const members = await db.all(`
-      SELECT u.id, u.name, u.avatar, u.position
+      SELECT u.id, u.name, u.avatar, u.position, gm."alwaysIn",
+        (SELECT COUNT(*) FROM "MatchPlayers" mp JOIN "Matches" m ON m.id = mp."matchId"
+          WHERE mp."userId" = u.id AND m."groupId" = gm."groupId" AND m.status = 'COMPLETED') AS matches
       FROM "User" u
       JOIN "GroupMembers" gm ON u.id = gm."userId"
       WHERE gm."groupId" = ?
@@ -264,33 +364,85 @@ app.get('/api/groups/:id/members', async (req, res) => {
   }
 });
 
-app.get('/api/groups/:id/messages', async (req, res) => {
+// Haftalık maç ayarı (sadece grup kurucusu). { enabled: false } ile kapatılır.
+app.put('/api/groups/:id/schedule', async (req, res) => {
   try {
     const { id } = req.params;
-    const messages = await db.all(`
-      SELECT m.*, u.name as "userName", u.avatar
-      FROM "GroupMessages" m
-      JOIN "User" u ON m."userId" = u.id
-      WHERE m."groupId" = ?
-      ORDER BY m."createdAt" ASC
-    `, [id]);
-    res.json(messages);
+    const group = await db.get('SELECT "creatorId" FROM "Groups" WHERE id = ?', [id]);
+    if (!group) return res.status(404).json({ error: 'Grup bulunamadı.' });
+    if (group.creatorId !== req.user.id) return res.status(403).json({ error: 'Haftalık maçı sadece grup kurucusu ayarlayabilir.' });
+
+    if (req.body.enabled === false) {
+      await db.run(
+        `UPDATE "Groups" SET "weeklyDay" = NULL, "weeklyTime" = NULL, "weeklyLocation" = NULL, "weeklyMaxPlayers" = NULL, "weeklyLockoutHours" = NULL WHERE id = ?`,
+        [id]
+      );
+      return res.json({ message: 'Haftalık maç kapatıldı. Açık olan maç yerinde kalır.' });
+    }
+
+    const day = Number(req.body.day);
+    const time = String(req.body.time ?? '').trim();
+    const location = String(req.body.location ?? '').trim();
+    const maxPlayers = Number(req.body.maxPlayers);
+    const lockoutHours = req.body.lockoutHours === undefined ? 3 : Number(req.body.lockoutHours);
+    if (!Number.isInteger(day) || day < 0 || day > 6) return res.status(400).json({ error: 'Gün seçin.' });
+    if (!parseHHMM(time)) return res.status(400).json({ error: 'Saat SS:DD biçiminde olmalı.' });
+    if (!location) return res.status(400).json({ error: 'Saha adı gerekli.' });
+    if (!Number.isInteger(maxPlayers) || maxPlayers < 2 || maxPlayers > 40) return res.status(400).json({ error: 'Kontenjan 2 ile 40 arasında olmalı.' });
+    if (!Number.isInteger(lockoutHours) || lockoutHours < 0 || lockoutHours > 48) return res.status(400).json({ error: 'Kilit süresi 0 ile 48 saat arasında olmalı.' });
+
+    await db.run(
+      `UPDATE "Groups" SET "weeklyDay" = ?, "weeklyTime" = ?, "weeklyLocation" = ?, "weeklyMaxPlayers" = ?, "weeklyLockoutHours" = ? WHERE id = ?`,
+      [day, time, location, maxPlayers, lockoutHours, id]
+    );
+    const created = await ensureUpcomingMatch(id);
+    res.json({
+      message: created
+        ? 'Haftalık maç ayarlandı ve sıradaki maç açıldı.'
+        : 'Haftalık maç ayarlandı. Şu an açık bir maç olduğu için yeni ayar bir sonraki maçtan itibaren geçerli.',
+      createdMatchId: created
+    });
   } catch (e) {
-    res.status(500).json({ error: 'Mesajlar alınamadı' });
+    console.error('Schedule error:', e);
+    res.status(500).json({ error: 'Haftalık maç ayarlanamadı.' });
   }
 });
 
-app.post('/api/groups/:id/messages', async (req, res) => {
+// "Her hafta varım": açılan her haftalık maçta otomatik kadroya girer.
+// Açıldığında, henüz cevap vermediği yaklaşan grup maçına da hemen Varım olarak eklenir.
+app.post('/api/groups/:id/always-in', async (req, res) => {
   try {
     const { id } = req.params;
-    const message = String(req.body.message ?? '').trim();
-    if (!message) return res.status(400).json({ error: 'Mesaj boş olamaz.' });
-    await db.run('INSERT INTO "GroupMessages" (id, "groupId", "userId", message) VALUES (?, ?, ?, ?)', [
-      randomUUID(), id, req.user.id, message
-    ]);
-    res.json({ message: 'Mesaj gönderildi' });
+    const userId = req.user.id;
+    const alwaysIn = Boolean(req.body.alwaysIn);
+    const r = await db.run('UPDATE "GroupMembers" SET "alwaysIn" = ? WHERE "groupId" = ? AND "userId" = ?', [alwaysIn, id, userId]);
+    if (r.changes === 0) return res.status(403).json({ error: 'Bu grubun üyesi değilsiniz.' });
+
+    let joinedMatch: string | null = null;
+    if (alwaysIn) {
+      const open = await db.all(
+        `SELECT m.id FROM "Matches" m
+         WHERE m."groupId" = ? AND m.status = 'OPEN' AND m."matchTimestamp" > ?
+           AND NOT EXISTS (SELECT 1 FROM "MatchPlayers" mp WHERE mp."matchId" = m.id AND mp."userId" = ?)
+           AND NOT EXISTS (SELECT 1 FROM "MatchResponses" r WHERE r."matchId" = m.id AND r."userId" = ?)
+         ORDER BY m."matchTimestamp" ASC`,
+        [id, Date.now(), userId, userId]
+      );
+      for (const m of open) {
+        const result = await respondToMatch(m.id, userId, 'YES');
+        if (result.status === 200 && !joinedMatch) joinedMatch = m.id;
+      }
+    }
+    res.json({
+      message: alwaysIn
+        ? 'Artık her haftalık maçta otomatik kadrodasın. Gelemeyeceğin hafta "Yokum" demen yeterli.'
+        : 'Otomatik katılım kapatıldı.',
+      alwaysIn,
+      joinedMatch
+    });
   } catch (e) {
-    res.status(500).json({ error: 'Mesaj gönderilemedi' });
+    console.error('Always-in error:', e);
+    res.status(500).json({ error: 'Ayar kaydedilemedi.' });
   }
 });
 
@@ -334,77 +486,6 @@ app.post('/api/users/:id/position', async (req, res) => {
   }
 });
 
-// USER AVAILABILITY (müsaitlik) API
-app.get('/api/users/:id/availability', async (req, res) => {
-  try {
-    const { id } = req.params;
-    const user = await db.get('SELECT id FROM "User" WHERE id = ?', [id]);
-    if (!user) return res.status(404).json({ error: 'Kullanıcı bulunamadı.' });
-    const includeInactive = String(req.query.includeInactive) === '1';
-    const rows = includeInactive
-      ? await db.all('SELECT * FROM "UserAvailability" WHERE "userId" = ? ORDER BY "dayOfWeek", "startTime"', [id])
-      : await db.all(
-          'SELECT * FROM "UserAvailability" WHERE "userId" = ? AND "isActive" = 1 ORDER BY "dayOfWeek", "startTime"',
-          [id]
-        );
-    res.json(rows);
-  } catch (error) {
-    res.status(500).json({ error: 'Müsaitlikler alınamadı.' });
-  }
-});
-
-app.post('/api/users/:id/availability', async (req, res) => {
-  if (req.params.id !== req.user.id) return res.status(403).json({ error: 'Yetkisiz erişim' });
-  try {
-    const { id } = req.params;
-    const { dayOfWeek, startTime, endTime } = req.body;
-    const user = await db.get('SELECT id FROM "User" WHERE id = ?', [id]);
-    if (!user) return res.status(404).json({ error: 'Kullanıcı bulunamadı.' });
-    if (
-      dayOfWeek === undefined ||
-      dayOfWeek === null ||
-      startTime == null ||
-      endTime == null
-    ) {
-      return res.status(400).json({ error: 'dayOfWeek, startTime ve endTime gerekli.' });
-    }
-    const d = Number(dayOfWeek);
-    if (!Number.isInteger(d) || d < 0 || d > 6) {
-      return res.status(400).json({ error: 'dayOfWeek 0 (Pazar) ile 6 (Cumartesi) arası olmalı.' });
-    }
-    if (timeToMinutes(String(startTime)) === null || timeToMinutes(String(endTime)) === null) {
-      return res.status(400).json({ error: 'startTime ve endTime HH:mm formatında olmalı.' });
-    }
-    const availId = randomUUID();
-    await db.run(
-      'INSERT INTO "UserAvailability" (id, "userId", "dayOfWeek", "startTime", "endTime", "isActive") VALUES (?, ?, ?, ?, ?, 1)',
-      [availId, id, d, String(startTime).trim(), String(endTime).trim()]
-    );
-    const row = await db.get('SELECT * FROM "UserAvailability" WHERE id = ?', [availId]);
-    res.status(201).json({ message: 'Müsaitlik kaydedildi.', availability: row });
-  } catch (error) {
-    res.status(500).json({ error: 'Müsaitlik kaydedilemedi.' });
-  }
-});
-
-app.delete('/api/users/:id/availability/:availabilityId', async (req, res) => {
-  if (req.params.id !== req.user.id) return res.status(403).json({ error: 'Yetkisiz erişim' });
-  try {
-    const { id, availabilityId } = req.params;
-    const r = await db.run(
-      'DELETE FROM "UserAvailability" WHERE id = ? AND "userId" = ?',
-      [availabilityId, id]
-    );
-    if (r.changes === 0) {
-      return res.status(404).json({ error: 'Kayıt bulunamadı.' });
-    }
-    res.json({ message: 'Müsaitlik silindi.' });
-  } catch (error) {
-    res.status(500).json({ error: 'Müsaitlik silinemedi.' });
-  }
-});
-
-// LEADERBOARD API
 app.get('/api/leaderboard', async (req, res) => {
   try {
     const rows = await db.all(`
@@ -414,14 +495,22 @@ app.get('/api/leaderboard', async (req, res) => {
              r.avg_all, COALESCE(r.c, 0) AS rating_count
       FROM "User" u
       LEFT JOIN (
-        SELECT "userId", COUNT(*) AS matches, SUM(goals) AS goals
-        FROM "MatchPlayers" GROUP BY "userId"
+        -- Sadece oynanmış (tamamlanmış) maçlar sayılır; yedekte kalanlar hariç.
+        SELECT mp."userId", COUNT(*) AS matches, SUM(mp.goals) AS goals
+        FROM "MatchPlayers" mp JOIN "Matches" m ON m.id = mp."matchId"
+        WHERE m.status = 'COMPLETED' AND mp.status = 'ACTIVE'
+        GROUP BY mp."userId"
       ) mp ON mp."userId" = u.id
       LEFT JOIN (
         SELECT "ratedId", (AVG(speed) + AVG(shoot) + AVG(pass) + AVG(physique)) / 4 AS avg_all, COUNT(*) AS c
         FROM "Ratings" GROUP BY "ratedId"
       ) r ON r."ratedId" = u.id
-    `);
+      -- Sadece benimle en az bir grubu paylaşanlar (uygulamadaki yabancılar görünmez).
+      WHERE EXISTS (
+        SELECT 1 FROM "GroupMembers" a JOIN "GroupMembers" b ON a."groupId" = b."groupId"
+        WHERE a."userId" = ? AND b."userId" = u.id
+      )
+    `, [req.user.id]);
 
     const results = rows.map((u: any) => {
       let score = u.rating_count > 0 ? Math.round(u.avg_all) : 60;
@@ -499,31 +588,26 @@ const MATCH_LIST_EXTRAS = `
   (SELECT COUNT(*) FROM "MatchPlayers" mp WHERE mp."matchId" = m.id AND mp.status = 'ACTIVE') AS "activeCount"
 `;
 
+// Maçlar sadece gruplar üzerinden görünür (herkese açık "Keşfet" listesi kaldırıldı).
 app.get('/api/matches', async (req, res) => {
   try {
     const userId = req.user.id;
-    if (req.query.type === 'public') {
-      const matches = await db.all(`
-        SELECT m.*, NULL AS "groupName", ${MATCH_LIST_EXTRAS}
-        FROM "Matches" m
-        WHERE m."groupId" IS NULL
-        ORDER BY m."matchTimestamp" ASC
-      `, [userId, userId]);
-      return res.json(matches);
-    }
+    if (req.query.type === 'public') return res.json([]); // eski uygulama sürümleri için
 
-    const onlyMine = req.query.type === 'my';
+    // Haftalık ayarı olan gruplarda sıradaki maç henüz açılmadıysa şimdi açılır.
+    await ensureUpcomingMatchesForUser(userId);
+
     const matches = await db.all(`
-      SELECT m.*, g.name AS "groupName", ${MATCH_LIST_EXTRAS}
+      SELECT m.*, g.name AS "groupName", g."creatorId" AS "groupCreatorId", ${MATCH_LIST_EXTRAS}
       FROM "Matches" m
       LEFT JOIN "Groups" g ON m."groupId" = g.id
       WHERE EXISTS (SELECT 1 FROM "MatchPlayers" mp WHERE mp."matchId" = m.id AND mp."userId" = ?)
          OR EXISTS (SELECT 1 FROM "GroupMembers" gm WHERE gm."groupId" = m."groupId" AND gm."userId" = ?)
-         ${onlyMine ? '' : 'OR m."groupId" IS NULL'}
       ORDER BY m."matchTimestamp" ASC
     `, [userId, userId, userId, userId]);
     res.json(matches);
   } catch (error) {
+    console.error('List matches error:', error);
     res.status(500).json({ error: 'Maçlar getirilirken hata oluştu.' });
   }
 });
@@ -535,29 +619,27 @@ app.post('/api/matches', async (req, res) => {
     if (!date || !time || !location || !(Number(maxPlayers) > 0)) {
       return res.status(400).json({ error: 'Tarih, saat, yer ve kontenjan gerekli.' });
     }
-    if (groupId) {
-      const member = await db.get('SELECT 1 FROM "GroupMembers" WHERE "groupId" = ? AND "userId" = ?', [groupId, creatorId]);
-      if (!member) return res.status(403).json({ error: 'Bu grubun üyesi değilsiniz.' });
-    }
+    if (!groupId) return res.status(400).json({ error: 'Maç bir gruba bağlı olmalı.' });
+    if (!(await isGroupMember(groupId, creatorId))) return res.status(403).json({ error: 'Bu grubun üyesi değilsiniz.' });
     const id = randomUUID();
 
     await tx(async (t) => {
       await t.run(
         `INSERT INTO "Matches" (id, "groupId", "creatorId", date, time, location, "maxPlayers", "teamAName", "teamBName", "matchTimestamp", "lockoutHours")
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [id, groupId || null, creatorId, date, time, location, Number(maxPlayers), teamAName || 'A Takımı', teamBName || 'B Takımı', Number(matchTimestamp) || 0, lockoutHours ?? 1]
+        [id, groupId, creatorId, date, time, location, Number(maxPlayers), teamAName || 'A Takımı', teamBName || 'B Takımı', Number(matchTimestamp) || 0, lockoutHours ?? 3]
       );
 
       await t.run('INSERT INTO "MatchPlayers" ("matchId", "userId") VALUES (?, ?)', [id, creatorId]);
 
-      if (groupId) {
+      {
         const groupData = await t.get('SELECT name FROM "Groups" WHERE id = ?', [groupId]);
         const members = await t.all('SELECT "userId" FROM "GroupMembers" WHERE "groupId" = ? AND "userId" <> ?', [groupId, creatorId]);
         for (const m of members) {
           await t.run('INSERT INTO "Notifications" (id, "userId", message, type, metadata) VALUES (?, ?, ?, ?, ?)', [
             randomUUID(),
             m.userId,
-            `${groupData?.name || 'Bir grup'} grubuna yeni bir maç daveti geldi! Kabul ediyor musun?`,
+            `${groupData?.name || 'Grubun'}: yeni maç (${date}, ${location}). Geliyor musun?`,
             'MATCH_INVITE',
             JSON.stringify({ matchId: id })
           ]);
@@ -572,93 +654,13 @@ app.post('/api/matches', async (req, res) => {
   }
 });
 
-// Must be before /api/matches/:id/players so "suggested-players" is not captured as :id
-app.get('/api/matches/:id/suggested-players', async (req, res) => {
-  try {
-    const { id: matchId } = req.params;
-    const match = await db.get('SELECT * FROM "Matches" WHERE id = ?', [matchId]);
-    if (!match) {
-      return res.status(404).json({ error: 'Maç bulunamadı.' });
-    }
-    if (!match.groupId) {
-      return res.json({
-        message: 'Grupsuz maçlarda grup üyeliği tabanı olmadığından öneri listelenmez.',
-        dayOfWeek: null,
-        matchMinutes: null,
-        suggested: [],
-        notInSlot: []
-      });
-    }
-    const slot = matchDayAndMinutesFromRow(match);
-    if (!slot) {
-      return res.status(400).json({ error: 'Maç tarihi veya saat bilgisi okunamadı. date/time veya matchTimestamp girin.' });
-    }
-    const { dayOfWeek, matchMinutes } = slot;
-
-    const members = await db.all(
-      `SELECT u.id, u.name, u.avatar, u.position
-       FROM "User" u
-       JOIN "GroupMembers" gm ON u.id = gm."userId"
-       WHERE gm."groupId" = ?
-         AND NOT EXISTS (SELECT 1 FROM "MatchPlayers" mp WHERE mp."matchId" = ? AND mp."userId" = u.id)`,
-      [match.groupId, matchId]
-    );
-
-    const availability = await db.all(
-      `SELECT ua."userId", ua."startTime", ua."endTime"
-       FROM "UserAvailability" ua
-       JOIN "GroupMembers" gm ON gm."userId" = ua."userId" AND gm."groupId" = ?
-       WHERE ua."dayOfWeek" = ? AND ua."isActive" = 1`,
-      [match.groupId, dayOfWeek]
-    );
-
-    const recentPlayers = await db.all(
-      `SELECT DISTINCT mp."userId" FROM "MatchPlayers" mp
-       WHERE mp."matchId" IN (
-         SELECT id FROM "Matches"
-         WHERE "groupId" = ? AND status = 'COMPLETED'
-         ORDER BY COALESCE("matchTimestamp", 0) DESC, "createdAt" DESC
-         LIMIT 2
-       )`,
-      [match.groupId]
-    );
-    const recentSet = new Set(recentPlayers.map((r: any) => r.userId));
-
-    const suggested: { id: any; name: any; avatar: any; position: any; playedRecentGroupMatch: boolean }[] = [];
-    const notInSlot: { id: any; name: any; avatar: any; position: any }[] = [];
-
-    for (const u of members) {
-      const inSlot = availability.some((row: any) =>
-        row.userId === u.id && isMinutesInWindow(matchMinutes, row.startTime, row.endTime)
-      );
-      if (inSlot) {
-        suggested.push({ ...u, playedRecentGroupMatch: recentSet.has(u.id) });
-      } else {
-        notInSlot.push(u);
-      }
-    }
-
-    suggested.sort((a, b) => {
-      if (a.playedRecentGroupMatch !== b.playedRecentGroupMatch) {
-        return a.playedRecentGroupMatch ? 1 : -1;
-      }
-      return String(a.name || '').localeCompare(String(b.name || ''), 'tr', { sensitivity: 'base' });
-    });
-
-    res.json({
-      dayOfWeek,
-      matchMinutes,
-      suggested,
-      notInSlot
-    });
-  } catch (error) {
-    res.status(500).json({ error: 'Öneri listesi alınamadı.' });
-  }
-});
-
 app.get('/api/matches/:id', async (req, res) => {
   try {
-    const match = await db.get('SELECT * FROM "Matches" WHERE id = ?', [req.params.id]);
+    const match = await db.get(
+      `SELECT m.*, g.name AS "groupName", g."creatorId" AS "groupCreatorId"
+       FROM "Matches" m LEFT JOIN "Groups" g ON g.id = m."groupId" WHERE m.id = ?`,
+      [req.params.id]
+    );
     if (!match) return res.status(404).json({ error: 'Maç bulunamadı.' });
     res.json(match);
   } catch (error) {
@@ -669,9 +671,9 @@ app.get('/api/matches/:id', async (req, res) => {
 app.delete('/api/matches/:id', async (req, res) => {
   try {
     const { id } = req.params;
-    const match = await db.get('SELECT "creatorId" FROM "Matches" WHERE id = ?', [id]);
-    if (!match) return res.status(404).json({ error: 'Maç bulunamadı.' });
-    if (match.creatorId !== req.user.id) return res.status(403).json({ error: 'Bu maçı silme yetkiniz yok.' });
+    const perm = await canManageMatch(id, req.user.id);
+    if (!perm.exists) return res.status(404).json({ error: 'Maç bulunamadı.' });
+    if (!perm.allowed) return res.status(403).json({ error: 'Bu maçı silme yetkiniz yok.' });
 
     // Oyuncular, MVP oyları, mesajlar ve puanlar otomatik silinir (veritabanı kuralı).
     await db.run('DELETE FROM "Matches" WHERE id = ?', [id]);
@@ -1043,34 +1045,6 @@ app.post('/api/matches/:id/mvp', async (req, res) => {
   }
 });
 
-// CHAT API
-app.get('/api/matches/:id/messages', async (req, res) => {
-  try {
-    const messages = await db.all(`
-      SELECT mm.id, mm.message, mm."createdAt", u.name, u.avatar
-      FROM "MatchMessages" mm
-      JOIN "User" u ON mm."userId" = u.id
-      WHERE mm."matchId" = ?
-      ORDER BY mm."createdAt" ASC
-    `, [req.params.id]);
-    res.json(messages);
-  } catch (error) {
-    res.status(500).json({ error: 'Mesajlar alınamadı.' });
-  }
-});
-
-app.post('/api/matches/:id/messages', async (req, res) => {
-  try {
-    const message = String(req.body.message ?? '').trim();
-    if (!message) return res.status(400).json({ error: 'Mesaj boş olamaz.' });
-    await db.run('INSERT INTO "MatchMessages" (id, "matchId", "userId", message) VALUES (?, ?, ?, ?)', [randomUUID(), req.params.id, req.user.id, message]);
-    res.json({ message: 'Mesaj gönderildi' });
-  } catch (error) {
-    res.status(500).json({ error: 'Mesaj gönderilemedi.' });
-  }
-});
-
-// RATINGS API
 app.post('/api/matches/:id/rate', async (req, res) => {
   try {
     const { id } = req.params;
@@ -1099,7 +1073,8 @@ app.get('/api/users/:id/stats', async (req, res) => {
     const { id } = req.params;
     const s = await db.get(`
       SELECT
-        (SELECT COUNT(*) FROM "MatchPlayers" WHERE "userId" = ?) AS matches,
+        (SELECT COUNT(*) FROM "MatchPlayers" mp JOIN "Matches" m ON m.id = mp."matchId"
+          WHERE mp."userId" = ? AND m.status = 'COMPLETED' AND mp.status = 'ACTIVE') AS matches,
         (SELECT COALESCE(SUM(goals), 0) FROM "MatchPlayers" WHERE "userId" = ?) AS goals,
         (SELECT COUNT(*) FROM "MvpVotes" WHERE "votedId" = ?) AS mvp,
         r."avgSpeed", r."avgShoot", r."avgPass", r."avgPhysique", r."ratingCount"

@@ -5,5 +5,4 @@ export type RootStackParamList = {
   Leaderboard: { user: Record<string, unknown> };
   MatchDetails: { match: Record<string, unknown>; user: Record<string, unknown> };
   GroupDetails: { group: Record<string, unknown>; user: Record<string, unknown> };
-  Availability: { user: Record<string, unknown> };
 };

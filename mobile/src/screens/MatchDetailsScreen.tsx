@@ -18,6 +18,7 @@ import { LinearGradient } from "expo-linear-gradient";
 import { Ionicons } from "@expo/vector-icons";
 import { StatusBar } from "expo-status-bar";
 import { API_URL } from "../config/api";
+import { formatMatchDate } from "../utils/format";
 
 const getCoordinates = (team: any[], isTeamA: boolean) => {
   const width = 320;
@@ -75,10 +76,6 @@ export default function MatchDetailsScreen({ route, navigation }: any) {
   const [matchScore, setMatchScore] = useState(matchInfo.score || '');
   const [matchTimestamp, setMatchTimestamp] = useState(matchInfo.matchTimestamp || 0);
   
-  // Chat
-  const [messages, setMessages] = useState<any[]>([]);
-  const [newMessage, setNewMessage] = useState('');
-
   // Finish Match
   const [finishModalVisible, setFinishModalVisible] = useState(false);
   const [scoreA, setScoreA] = useState('');
@@ -97,143 +94,62 @@ export default function MatchDetailsScreen({ route, navigation }: any) {
   // Weather
   const [weather, setWeather] = useState<{temp: number, icon: string, desc: string} | null>(null);
 
-  // Map Coordinates
-  const [mapCoords, setMapCoords] = useState<{lat: number, lon: number} | null>(null);
-  const [mapLoading, setMapLoading] = useState(false);
-
-  // Müsaitlik önerileri
-  const [suggested, setSuggested] = useState<any[]>([]);
-
   // AI Team Suggestion Preview States
   const [suggestedTeamsModalVisible, setSuggestedTeamsModalVisible] = useState(false);
   const [suggestedTeamA, setSuggestedTeamA] = useState<any[]>([]);
   const [suggestedTeamB, setSuggestedTeamB] = useState<any[]>([]);
   const [suggestedStats, setSuggestedStats] = useState<{teamA_overall: number, teamB_overall: number} | null>(null);
   const [saveTeamsLoading, setSaveTeamsLoading] = useState(false);
-  const [suggestedInfo, setSuggestedInfo] = useState<{
-    dayOfWeek: number | null;
-    matchMinutes: number | null;
-    message?: string;
-  } | null>(null);
-  const [suggestedLoading, setSuggestedLoading] = useState(false);
+  const [groupCreatorId, setGroupCreatorId] = useState(matchInfo.groupCreatorId || null);
+  // Takım kurma, maçı bitirme ve iptal: maçı kuran ya da grubun kurucusu (sunucudaki kuralın aynısı)
+  const isManager = matchInfo.creatorId === user.id || groupCreatorId === user.id;
 
-  const fetchWeather = async (loc: string, matchDateStr: string) => {
+  // Hava durumu: saha adı haritada bulunursa ve maç 7 gün içindeyse gösterilir.
+  // Bulunamazsa hiçbir şey gösterilmez (yanlış şehrin havasını göstermektense).
+  const fetchWeather = async (loc: string, ts: number) => {
     try {
-       let lat = 41.0082; 
-       let lon = 28.9784;
+      if (!loc || !ts) return;
+      const daysAhead = (ts - Date.now()) / 86400000;
+      if (daysAhead < -1 || daysAhead > 7) return;
 
-       try {
-          const geoRes = await fetch(`https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(loc || 'İstanbul')}&count=1`);
-          const geoData = await geoRes.json();
-          if (geoData.results && geoData.results.length > 0) {
-             lat = geoData.results[0].latitude;
-             lon = geoData.results[0].longitude;
-          }
-       } catch(e) {} // Lokasyon bulunamazsa varsayılanda kal
-
-       // Hava durumunu al (Günlük Tahmin)
-       const weatherRes = await fetch(`https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&daily=weathercode,temperature_2m_max&timezone=auto`);
-       const weatherData = await weatherRes.json();
-       
-       if (weatherData && weatherData.daily) {
-          let dayIndex = 0; // Default: Bugün
-          if (matchDateStr) {
-             // API tarih formatı "YYYY-MM-DD". Kullanıcının girdiği tarihte (örn: 15.04.2026) o gün ve ay uyuşuyor mu diye kaba bir kontrol yapalım.
-             const foundIdx = weatherData.daily.time.findIndex((t: string) => {
-                const parts = t.split('-');
-                return matchDateStr.includes(parts[2]) && matchDateStr.includes(parts[1]);
-             });
-             if (foundIdx !== -1) dayIndex = foundIdx;
-          }
-
-          const code = weatherData.daily.weathercode[dayIndex];
-          const temp = Math.round(weatherData.daily.temperature_2m_max[dayIndex]);
-          let icon = '☀️'; let desc = 'Güneşli (Açık)';
-          
-          if (code >= 1 && code <= 3) { icon = '⛅'; desc = 'Bulutlu'; }
-          else if (code >= 45 && code <= 48) { icon = '🌫'; desc = 'Sisli'; }
-          else if (code >= 51 && code <= 67) { icon = '🌧'; desc = 'Yağmurlu'; }
-          else if (code >= 71 && code <= 77) { icon = '❄️'; desc = 'Karlı'; }
-          else if (code >= 80 && code <= 82) { icon = '🌦'; desc = 'Sağanak Bekleniyor'; }
-          else if (code >= 95) { icon = '⛈️'; desc = 'Fırtına'; }
-          
-          setWeather({ temp, icon, desc });
-       }
-    } catch(e) {
-       console.log('Weather err:', e);
-    }
-  };
-
-  const resolveCoords = async (loc: string) => {
-    if (!loc) return;
-    setMapLoading(true);
-    try {
-      // 1. Try to parse direct coordinates "lat, lon"
-      const parts = loc.split(',');
-      if (parts.length === 2) {
-        const lat = parseFloat(parts[0].trim());
-        const lon = parseFloat(parts[1].trim());
-        if (!isNaN(lat) && !isNaN(lon) && lat >= -90 && lat <= 90 && lon >= -180 && lon <= 180) {
-          setMapCoords({ lat, lon });
-          setMapLoading(false);
-          return;
-        }
-      }
-
-      // 2. Otherwise geocode
-      const geoRes = await fetch(`https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(loc)}&count=1`);
+      const geoRes = await fetch(`https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(loc)}&count=1&language=tr`);
       const geoData = await geoRes.json();
-      if (geoData.results && geoData.results.length > 0) {
-        setMapCoords({
-          lat: geoData.results[0].latitude,
-          lon: geoData.results[0].longitude
-        });
-      } else {
-        // Fallback to default coordinate (Istanbul)
-        setMapCoords({ lat: 41.0082, lon: 28.9784 });
-      }
+      const place = geoData?.results?.[0];
+      if (!place) return;
+
+      const weatherRes = await fetch(`https://api.open-meteo.com/v1/forecast?latitude=${place.latitude}&longitude=${place.longitude}&daily=weathercode,temperature_2m_max&timezone=auto`);
+      const weatherData = await weatherRes.json();
+      const d = new Date(ts);
+      const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+      const idx = weatherData?.daily?.time?.indexOf(key) ?? -1;
+      if (idx < 0) return;
+
+      const code = weatherData.daily.weathercode[idx];
+      const temp = Math.round(weatherData.daily.temperature_2m_max[idx]);
+      let icon = '☀️'; let desc = 'Açık';
+      if (code >= 1 && code <= 3) { icon = '⛅'; desc = 'Bulutlu'; }
+      else if (code >= 45 && code <= 48) { icon = '🌫'; desc = 'Sisli'; }
+      else if (code >= 51 && code <= 67) { icon = '🌧'; desc = 'Yağmurlu'; }
+      else if (code >= 71 && code <= 77) { icon = '❄️'; desc = 'Karlı'; }
+      else if (code >= 80 && code <= 82) { icon = '🌦'; desc = 'Sağanak bekleniyor'; }
+      else if (code >= 95) { icon = '⛈️'; desc = 'Fırtına'; }
+      setWeather({ temp, icon, desc });
     } catch (e) {
-      console.log('Error resolving coordinates:', e);
-      setMapCoords({ lat: 41.0082, lon: 28.9784 });
+      console.log('Weather err:', e);
     }
-    setMapLoading(false);
   };
 
-  const fetchSuggested = async () => {
-    if (!matchInfo.id) return;
-    setSuggestedLoading(true);
-    try {
-      const res = await apiFetch(`${API_URL}/matches/${matchInfo.id}/suggested-players`);
-      const data = await res.json();
-      if (res.ok) {
-        setSuggested(Array.isArray(data.suggested) ? data.suggested : []);
-        setSuggestedInfo({
-          dayOfWeek: data.dayOfWeek ?? null,
-          matchMinutes: data.matchMinutes ?? null,
-          message: data.message,
-        });
-      }
-    } catch (e) {
-      console.log("Öneriler alınamadı", e);
-    }
-    setSuggestedLoading(false);
-  };
-
-  const openAvailability = () => {
-    navigation.navigate("Availability" as never, { user } as never);
+  const openDirections = () => {
+    const q = encodeURIComponent(matchInfo.location || '');
+    Linking.openURL(`https://www.google.com/maps/search/?api=1&query=${q}`);
   };
 
   useEffect(() => {
     if (matchInfo.id) {
       fetchMatchInfo();
       fetchPlayers();
-      fetchMessages();
-      fetchSuggested();
       fetchMvp();
-      if (matchInfo.location) {
-        fetchWeather(matchInfo.location, String(matchInfo.date || ""));
-        resolveCoords(matchInfo.location);
-      }
+      fetchWeather(matchInfo.location, Number(matchInfo.matchTimestamp) || 0);
     }
   }, [matchInfo.id]);
 
@@ -244,6 +160,7 @@ export default function MatchDetailsScreen({ route, navigation }: any) {
       if (data.status) setMatchStatus(data.status);
       if (data.score) setMatchScore(data.score);
       if (data.matchTimestamp) setMatchTimestamp(data.matchTimestamp);
+      if (data.groupCreatorId) setGroupCreatorId(data.groupCreatorId);
     } catch(e) {}
   };
 
@@ -267,27 +184,6 @@ export default function MatchDetailsScreen({ route, navigation }: any) {
     }
   };
 
-  const fetchMessages = async () => {
-    try {
-      const res = await apiFetch(`${API_URL}/matches/${matchInfo.id}/messages`);
-      const data = await res.json();
-      if(Array.isArray(data)) setMessages(data);
-    } catch(e) {}
-  };
-
-  const handleSendMessage = async () => {
-    if(!newMessage.trim()) return;
-    try {
-       await apiFetch(`${API_URL}/matches/${matchInfo.id}/messages`, {
-         method: 'POST',
-         headers: {'Content-Type': 'application/json'},
-         body: JSON.stringify({ message: newMessage })
-       });
-       setNewMessage('');
-       fetchMessages();
-    } catch(e) {}
-  };
-
   const submitFinishMatch = async () => {
     try {
       const finalScore = (scoreA && scoreB) ? `${scoreA} - ${scoreB}` : '';
@@ -302,7 +198,6 @@ export default function MatchDetailsScreen({ route, navigation }: any) {
         if (finalScore) setMatchScore(finalScore);
         setFinishModalVisible(false);
         fetchPlayers();
-        fetchMessages();
         Alert.alert('Maç Bitti', 'Skor ve golcüler kaydedildi. Artık oyuncuları puanlayabilirsiniz!');
       } else {
         const errorData = await res.json();
@@ -547,8 +442,6 @@ export default function MatchDetailsScreen({ route, navigation }: any) {
           onPress={() => {
             fetchMatchInfo();
             fetchPlayers();
-            fetchMessages();
-            fetchSuggested();
             fetchMvp();
           }}
         >
@@ -563,8 +456,14 @@ export default function MatchDetailsScreen({ route, navigation }: any) {
           </View>
           <View style={styles.infoRow}>
             <Ionicons name="calendar-outline" size={20} color="#00E676" style={styles.infoIcon} />
-            <Text style={styles.infoText}>{String(matchInfo.date)} • {String(matchInfo.time)}</Text>
+            <Text style={styles.infoText}>{formatMatchDate({ ...matchInfo, matchTimestamp })}</Text>
           </View>
+          {matchInfo.groupName ? (
+            <View style={styles.infoRow}>
+              <Ionicons name="shield-checkmark-outline" size={20} color="#00E676" style={styles.infoIcon} />
+              <Text style={styles.infoText}>{String(matchInfo.groupName)}</Text>
+            </View>
+          ) : null}
           
           {weather && (
             <View style={[styles.infoRow, {marginTop: 5}]}>
@@ -582,7 +481,7 @@ export default function MatchDetailsScreen({ route, navigation }: any) {
             <Text style={styles.organizerText}>
               Durum: <Text style={styles.organizerName}>{matchStatus === 'COMPLETED' ? 'Tamamlandı' : 'Açık'}</Text>
             </Text>
-            {matchStatus === 'OPEN' && (user.role === 'ORGANIZER' || matchInfo.creatorId === user.id) && (
+            {matchStatus === 'OPEN' && isManager && (
               (matchTimestamp && Date.now() < matchTimestamp) ? (
                 <TouchableOpacity style={{marginLeft: 'auto', backgroundColor: '#EF4444', paddingHorizontal: 12, paddingVertical: 6, borderRadius: 8}} onPress={handleCancelMatch}>
                    <Text style={{color: '#fff', fontSize: 13, fontWeight: 'bold'}}>Maçı İptal Et</Text>
@@ -604,188 +503,21 @@ export default function MatchDetailsScreen({ route, navigation }: any) {
 
         </LinearGradient>
 
-        {/* SAHA HARİTASI ENTEGRASYONU */}
+        {/* Saha: her platformda çalışan tek tık yol tarifi */}
         {matchInfo.location ? (
-          <View style={styles.mapContainerCard}>
-            <View style={styles.mapHeaderRow}>
-              <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-                <Ionicons name="map-outline" size={20} color="#00E676" style={{ marginRight: 8 }} />
-                <Text style={styles.mapTitle}>Saha Konumu</Text>
-              </View>
-              {mapCoords && (
-                <TouchableOpacity 
-                  style={styles.directionsBtn} 
-                  onPress={() => {
-                    const latLng = `${mapCoords.lat},${mapCoords.lon}`;
-                    const label = encodeURIComponent(matchInfo.location || "Saha");
-                    const url = Platform.select({
-                      ios: `maps:0,0?q=${label}@${latLng}`,
-                      android: `geo:0,0?q=${latLng}(${label})`,
-                      web: `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(matchInfo.location)}`
-                    });
-                    if (url) Linking.openURL(url);
-                  }}
-                >
-                  <Text style={styles.directionsBtnText}>Yol Tarifi Al 📍</Text>
-                </TouchableOpacity>
-              )}
+          <TouchableOpacity activeOpacity={0.85} onPress={openDirections} style={styles.locationCard}>
+            <Ionicons name="navigate-circle" size={36} color="#00E676" />
+            <View style={{ flex: 1, marginLeft: 12 }}>
+              <Text style={styles.locationName} numberOfLines={1}>{String(matchInfo.location)}</Text>
+              <Text style={styles.locationSub}>Haritada aç / yol tarifi al</Text>
             </View>
-
-            {mapLoading ? (
-              <View style={styles.mapPlaceholder}>
-                <Text style={{ color: '#94A3B8' }}>Konum koordinatları alınıyor...</Text>
-              </View>
-            ) : mapCoords ? (
-              Platform.OS === 'web' ? (
-                <View style={styles.mapFrameWrapper}>
-                  <iframe
-                    style={{ width: '100%', height: '100%', borderRadius: 12, border: 'none', filter: 'invert(90%) hue-rotate(180deg) brightness(95%) contrast(90%)' }}
-                    srcDoc={`
-                      <!DOCTYPE html>
-                      <html>
-                      <head>
-                        <meta charset="utf-8" />
-                        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-                        <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-                        <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-                        <style>
-                          html, body, #map {
-                            height: 100%;
-                            margin: 0;
-                            padding: 0;
-                            background-color: #0F172A;
-                          }
-                          .leaflet-popup-content-wrapper {
-                            background-color: #1E293B;
-                            color: #FFF;
-                            border: 1px solid rgba(255,255,255,0.1);
-                            border-radius: 8px;
-                            font-family: system-ui, -apple-system, sans-serif;
-                          }
-                          .leaflet-popup-tip {
-                            background-color: #1E293B;
-                          }
-                        </style>
-                      </head>
-                      <body>
-                        <div id="map"></div>
-                        <script>
-                          var map = L.map('map', {zoomControl: false}).setView([${mapCoords.lat}, ${mapCoords.lon}], 15);
-                          L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-                            maxZoom: 19
-                          }).addTo(map);
-                          var marker = L.marker([${mapCoords.lat}, ${mapCoords.lon}]).addTo(map);
-                          marker.bindPopup("<b style='color:#00E676;'>Maç Sahası</b><br/><span style='font-size:11px;'>${matchInfo.location.replace(/"/g, '&quot;')}</span>").openPopup();
-                        </script>
-                      </body>
-                      </html>
-                    `}
-                  />
-                </View>
-              ) : (
-                <TouchableOpacity 
-                  activeOpacity={0.9} 
-                  style={styles.mobileMapMockCard}
-                  onPress={() => {
-                    const latLng = `${mapCoords.lat},${mapCoords.lon}`;
-                    const label = encodeURIComponent(matchInfo.location || "Saha");
-                    const url = Platform.select({
-                      ios: `maps:0,0?q=${label}@${latLng}`,
-                      android: `geo:0,0?q=${latLng}(${label})`
-                    });
-                    if (url) Linking.openURL(url);
-                  }}
-                >
-                  <LinearGradient 
-                    colors={['rgba(30, 41, 59, 0.9)', 'rgba(15, 23, 42, 0.9)']} 
-                    style={styles.mobileMockInner}
-                  >
-                    <Ionicons name="navigate-circle" size={44} color="#00E676" style={{ marginBottom: 8 }} />
-                    <Text style={styles.mobileMockText}>{String(matchInfo.location)}</Text>
-                    <Text style={styles.mobileMockSub}>Haritalarda açmak için dokunun</Text>
-                  </LinearGradient>
-                </TouchableOpacity>
-              )
-            ) : (
-              <View style={styles.mapPlaceholder}>
-                <Text style={{ color: '#94A3B8' }}>Harita konumu belirlenemedi.</Text>
-              </View>
-            )}
-          </View>
+            <Ionicons name="open-outline" size={18} color="#64748B" />
+          </TouchableOpacity>
         ) : null}
-
-        {matchStatus === "OPEN" && (
-          <View style={styles.suggestSection}>
-            <View style={styles.suggestHeader}>
-              <View style={{ flex: 1 }}>
-                <Text style={styles.suggestTitle}>Müsaitliğe göre öneriler</Text>
-                {suggestedInfo?.dayOfWeek != null && suggestedInfo?.matchMinutes != null ? (
-                  <Text style={styles.suggestSub}>
-                    Gün: {["Pz", "Pt", "Sa", "Ça", "Pe", "Cu", "Ct"][suggestedInfo.dayOfWeek] ?? suggestedInfo.dayOfWeek}{" "}
-                    • Maç saati (dk): {suggestedInfo.matchMinutes} (
-                    {String(Math.floor(suggestedInfo.matchMinutes / 60)).padStart(2, "0")}:
-                    {String(suggestedInfo.matchMinutes % 60).padStart(2, "0")})
-                  </Text>
-                ) : suggestedInfo?.message ? (
-                  <Text style={styles.suggestSub}>{suggestedInfo.message}</Text>
-                ) : null}
-              </View>
-              <TouchableOpacity
-                onPress={fetchSuggested}
-                disabled={suggestedLoading}
-                style={{ padding: 6 }}
-                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-              >
-                <Ionicons name="refresh" size={20} color={suggestedLoading ? "#64748B" : "#00E676"} />
-              </TouchableOpacity>
-            </View>
-            <TouchableOpacity onPress={openAvailability} style={styles.availBtn} activeOpacity={0.85}>
-              <Ionicons name="calendar-outline" size={18} color="#0F172A" style={{ marginRight: 8 }} />
-              <Text style={styles.availBtnText}>Müsaitliklerimi düzenle</Text>
-            </TouchableOpacity>
-            {suggested.length > 0 ? (
-              <View style={styles.suggestList}>
-                {suggested.map((p: any) => (
-                  <View key={p.id} style={styles.suggestRow}>
-                    <View style={styles.playerAvatar}>
-                      {p.avatar ? (
-                        <Image
-                          source={{ uri: p.avatar }}
-                          style={{ width: 36, height: 36, borderRadius: 18 }}
-                        />
-                      ) : (
-                        <Text style={styles.playerInitial}>
-                          {String(p.name?.charAt(0) || "?")}
-                        </Text>
-                      )}
-                    </View>
-                    <View style={{ flex: 1 }}>
-                      <Text style={styles.suggestName}>{String(p.name)}</Text>
-                      <Text style={styles.suggestPos}>{String(p.position || "Oyuncu")}</Text>
-                    </View>
-                    {p.playedRecentGroupMatch ? (
-                      <View style={styles.badgeDim}>
-                        <Text style={styles.badgeDimText}>Son maçlarda oynadı</Text>
-                      </View>
-                    ) : (
-                      <View style={styles.badgeOk}>
-                        <Text style={styles.badgeOkText}>Öncelik</Text>
-                      </View>
-                    )}
-                  </View>
-                ))}
-              </View>
-            ) : !suggestedLoading && suggestedInfo?.dayOfWeek != null ? (
-              <Text style={styles.suggestEmpty}>
-                Bu aralıkta uygun (kadro dışı) grup üyesi yok. Müsaitlik ekle veya farklı saat dene.
-              </Text>
-            ) : null}
-          </View>
-        )}
 
         <View style={styles.sectionHeader}>
           <Text style={styles.sectionTitle}>Kadro ({String(activePlayers.length)}/{String(matchInfo.maxPlayers || 14)})</Text>
-          {matchStatus === 'OPEN' && (
+          {matchStatus === 'OPEN' && isManager && (
             <TouchableOpacity onPress={handleDivideTeams} style={styles.divideButton}>
               <Text style={styles.divideButtonText}>Takım Böl 🎲</Text>
             </TouchableOpacity>
@@ -880,31 +612,6 @@ export default function MatchDetailsScreen({ route, navigation }: any) {
             ) : null}
           </View>
         )}
-
-        <View style={styles.sectionHeader}>
-            <Text style={styles.sectionTitle}>Soyunma Odası (Sohbet)</Text>
-        </View>
-        <View style={styles.chatContainer}>
-            {messages.map(m => (
-               <View key={m.id} style={[(m.name === user.name) ? styles.myMsg : styles.otherMsg]}>
-                 <Text style={styles.msgName}>{(m.name === user.name) ? 'Sen' : m.name}</Text>
-                 <Text style={styles.msgText}>{m.message}</Text>
-               </View>
-            ))}
-            {messages.length === 0 && <Text style={{color:'#A0A0A0', alignSelf:'center', marginVertical:10}}>İlk mesajı sen gönder!</Text>}
-            <View style={styles.chatInputRow}>
-               <TextInput 
-                  style={styles.chatInput} 
-                  placeholder="Mesaj yaz..." 
-                  placeholderTextColor="#888" 
-                  value={newMessage} 
-                  onChangeText={setNewMessage} 
-               />
-               <TouchableOpacity style={styles.chatSendBtn} onPress={handleSendMessage}>
-                  <Ionicons name="send" size={20} color="#fff" />
-               </TouchableOpacity>
-            </View>
-        </View>
 
         <View style={{ height: 150 }} />
       </ScrollView>
@@ -1204,6 +911,9 @@ const styles = StyleSheet.create({
   statusText: { fontSize: 12, fontWeight: "bold" },
   statusTextApproved: { color: "#00E676" },
   statusTextPending: { color: "#F59E0B" },
+  locationCard: { flexDirection: "row", alignItems: "center", backgroundColor: "#1E293B", borderRadius: 16, padding: 16, marginBottom: 20, borderWidth: 1, borderColor: "rgba(0, 230, 118, 0.2)" },
+  locationName: { color: "#FFFFFF", fontSize: 16, fontWeight: "bold" },
+  locationSub: { color: "#94A3B8", fontSize: 13, marginTop: 2 },
   footer: { position: "absolute", bottom: 0, left: 0, right: 0, paddingHorizontal: 20, paddingTop: 12, paddingBottom: 20, backgroundColor: "#0F172A", borderTopWidth: 1, borderTopColor: "rgba(255,255,255,0.08)" },
   answerPrompt: { color: "#94A3B8", fontSize: 13, textAlign: "center", marginBottom: 10 },
   answerRow: { flexDirection: "row", gap: 10 },
@@ -1213,15 +923,6 @@ const styles = StyleSheet.create({
   tallyChip: { flex: 1, alignItems: "center", paddingVertical: 10, borderRadius: 12, borderWidth: 1, backgroundColor: "rgba(255,255,255,0.03)" },
   tallyNum: { fontSize: 22, fontWeight: "900" },
   tallyLabel: { color: "#94A3B8", fontSize: 11, marginTop: 2 },
-  
-  chatContainer: { backgroundColor: "rgba(255, 255, 255, 0.03)", borderRadius: 20, padding: 15, borderWidth: 1, borderColor: "rgba(255, 255, 255, 0.05)" },
-  myMsg: { backgroundColor: 'rgba(0, 230, 118, 0.15)', padding: 10, borderRadius: 10, marginBottom: 10, alignSelf: 'flex-end', minWidth: '50%' },
-  otherMsg: { backgroundColor: 'rgba(255, 255, 255, 0.1)', padding: 10, borderRadius: 10, marginBottom: 10, alignSelf: 'flex-start', minWidth: '50%' },
-  msgName: { fontSize: 11, color: '#A0A0A0', marginBottom: 4 },
-  msgText: { color: '#FFF', fontSize: 14 },
-  chatInputRow: { flexDirection: 'row', marginTop: 10, alignItems: 'center' },
-  chatInput: { flex: 1, backgroundColor: 'rgba(255,255,255,0.05)', color: '#FFF', borderRadius: 20, paddingHorizontal: 15, height: 40 },
-  chatSendBtn: { backgroundColor: '#00E676', width: 40, height: 40, borderRadius: 20, justifyContent: 'center', alignItems: 'center', marginLeft: 10 },
 
   modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.8)', justifyContent: 'flex-end' },
   modalContent: { backgroundColor: '#1E293B', borderTopLeftRadius: 30, borderTopRightRadius: 30, padding: 25, paddingBottom: 40, borderTopWidth: 1, borderTopColor: 'rgba(0, 230, 118, 0.3)' },
@@ -1234,54 +935,6 @@ const styles = StyleSheet.create({
   saveBtnText: { color: '#000', fontSize: 16, fontWeight: 'bold', letterSpacing: 1 },
   cancelBtn: { paddingVertical: 15, alignItems: 'center' },
   cancelBtnText: { color: '#EF4444', fontSize: 16, fontWeight: 'bold' },
-
-  suggestSection: {
-    marginTop: 20,
-    marginBottom: 4,
-    backgroundColor: 'rgba(0, 230, 118, 0.06)',
-    borderRadius: 16,
-    padding: 16,
-    borderWidth: 1,
-    borderColor: 'rgba(0, 230, 118, 0.2)',
-  },
-  suggestHeader: { flexDirection: 'row', alignItems: 'flex-start', marginBottom: 12 },
-  suggestTitle: { color: '#FFFFFF', fontSize: 16, fontWeight: '800' },
-  suggestSub: { color: '#94A3B8', fontSize: 12, marginTop: 4, lineHeight: 16 },
-  availBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: '#00E676',
-    paddingVertical: 12,
-    borderRadius: 12,
-    marginBottom: 12,
-  },
-  availBtnText: { color: '#0F172A', fontSize: 14, fontWeight: '800' },
-  suggestList: { marginTop: 4 },
-  suggestRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingVertical: 10,
-    borderBottomWidth: 1,
-    borderBottomColor: 'rgba(255,255,255,0.06)',
-  },
-  suggestName: { color: '#F8FAFC', fontSize: 15, fontWeight: '600' },
-  suggestPos: { color: '#94A3B8', fontSize: 12, marginTop: 2 },
-  suggestEmpty: { color: '#64748B', fontSize: 13, lineHeight: 18 },
-  badgeOk: {
-    backgroundColor: 'rgba(0, 230, 118, 0.2)',
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: 8,
-  },
-  badgeOkText: { color: '#00E676', fontSize: 10, fontWeight: '800' },
-  badgeDim: {
-    backgroundColor: 'rgba(148, 163, 184, 0.15)',
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: 8,
-  },
-  badgeDimText: { color: '#94A3B8', fontSize: 10, fontWeight: '700' },
   statsComparisonRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1386,81 +1039,4 @@ const styles = StyleSheet.create({
     fontSize: 8,
     fontWeight: 'bold',
   },
-  mapContainerCard: {
-    backgroundColor: 'rgba(30, 41, 59, 0.4)',
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.05)',
-    borderRadius: 20,
-    padding: 16,
-    marginBottom: 20,
-    marginTop: 15,
-  },
-  mapHeaderRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 12,
-  },
-  mapTitle: {
-    color: '#FFFFFF',
-    fontSize: 16,
-    fontWeight: '800',
-  },
-  directionsBtn: {
-    backgroundColor: 'rgba(0, 230, 118, 0.12)',
-    borderWidth: 1,
-    borderColor: 'rgba(0, 230, 118, 0.3)',
-    borderRadius: 8,
-    paddingHorizontal: 10,
-    paddingVertical: 5,
-  },
-  directionsBtnText: {
-    color: '#00E676',
-    fontSize: 12,
-    fontWeight: '800',
-  },
-  mapFrameWrapper: {
-    width: '100%',
-    height: 200,
-    borderRadius: 12,
-    overflow: 'hidden',
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.06)',
-  },
-  mapPlaceholder: {
-    width: '100%',
-    height: 150,
-    borderRadius: 12,
-    backgroundColor: 'rgba(0, 0, 0, 0.2)',
-    justifyContent: 'center',
-    alignItems: 'center',
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.05)',
-  },
-  mobileMapMockCard: {
-    width: '100%',
-    height: 160,
-    borderRadius: 12,
-    overflow: 'hidden',
-    borderWidth: 1,
-    borderColor: 'rgba(0, 230, 118, 0.2)',
-  },
-  mobileMockInner: {
-    flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-    padding: 20,
-  },
-  mobileMockText: {
-    color: '#FFFFFF',
-    fontSize: 14,
-    fontWeight: 'bold',
-    textAlign: 'center',
-    marginBottom: 4,
-  },
-  mobileMockSub: {
-    color: '#00E676',
-    fontSize: 12,
-    fontWeight: '600',
-  }
 });

@@ -214,9 +214,7 @@ export default function AuthScreen({ navigation }: any) {
              </View>
             )}
 
-            <TouchableOpacity style={styles.forgotPassword}>
-              {isLogin && <Text style={styles.forgotText}>Şifremi Unuttum</Text>}
-            </TouchableOpacity>
+            <View style={{ height: 16 }} />
 
             <Animated.View style={{ transform: [{ scale: buttonScale }] }}>
               <TouchableOpacity 
@@ -326,14 +324,6 @@ const styles = StyleSheet.create({
     color: '#FFFFFF',
     fontSize: 16,
     height: '100%',
-  },
-  forgotPassword: {
-    alignSelf: 'flex-end',
-    marginBottom: 30,
-  },
-  forgotText: {
-    color: '#A0A0A0',
-    fontSize: 14,
   },
   button: {
     height: 60,

@@ -1,5 +1,5 @@
 import { apiFetch } from '../utils/api';
-import React, { useState, useEffect } from "react";
+import React, { useState } from "react";
 import {
   StyleSheet,
   Text,
@@ -18,6 +18,7 @@ import { LinearGradient } from "expo-linear-gradient";
 import { Ionicons } from "@expo/vector-icons";
 import { StatusBar } from "expo-status-bar";
 import { API_URL } from "../config/api";
+import { formatMatchDate, formatWeekly, isPastMatch, DAY_NAMES_SHORT } from "../utils/format";
 
 // Maç kartında "benim cevabım" rozeti
 const MY_STATUS_BADGE: Record<string, { label: string; color: string; bg: string; border: string }> = {
@@ -28,90 +29,39 @@ const MY_STATUS_BADGE: Record<string, { label: string; color: string; bg: string
   NONE:     { label: 'Cevap ver', color: '#0F172A', bg: '#FFC107',                  border: '#FFC107' },
 };
 
+// 18:00–23:30 akşam, 00:00 ve 00:30 o günün gecesi (bir sonraki takvim günü olarak kaydedilir).
+const HOURS = ['18:00', '19:00', '20:00', '21:00', '22:00', '23:00', '00:00'];
+const LOCKOUT_OPTIONS = [1, 3, 6, 12];
+
+const showAlert = (title: string, msg: string) => {
+  if (Platform.OS === 'web') window.alert(`${title}\n\n${msg}`);
+  else Alert.alert(title, msg);
+};
+
 export default function DashboardScreen({ route, navigation }: any) {
   const user = route.params?.user || { name: "Oyuncu", id: "tempId" };
 
   // Veriler
-  const [myMatches, setMyMatches] = useState<any[]>([]);
-  const [publicMatches, setPublicMatches] = useState<any[]>([]);
-  const [matchTab, setMatchTab] = useState<'my' | 'public'>('my');
+  const [matches, setMatches] = useState<any[]>([]);
   const [groups, setGroups] = useState<any[]>([]);
   const [notifications, setNotifications] = useState<any[]>([]);
-  
+
   const [isModalVisible, setIsModalVisible] = useState(false);
   const [isNotificationsVisible, setIsNotificationsVisible] = useState(false);
-  const [isMapModalVisible, setIsMapModalVisible] = useState(false);
   const [isCalendarModalVisible, setIsCalendarModalVisible] = useState(false);
   const [matchLocation, setMatchLocation] = useState("");
-  const [selectedDate, setSelectedDate] = useState("");
+  const [calendarDate, setCalendarDate] = useState<Date | null>(null);
   const [selectedTime, setSelectedTime] = useState("");
-  const [calendarDate, setCalendarDate] = useState<Date>(new Date());
   const [currentMonth, setCurrentMonth] = useState<Date>(new Date());
   const [maxPlayers, setMaxPlayers] = useState("14");
-  const [matchTeamA, setMatchTeamA] = useState("");
-  const [matchTeamB, setMatchTeamB] = useState("");
-
-  const DATES = Array.from({length: 14}).map((_, i) => {
-     const d = new Date();
-     d.setDate(d.getDate() + i);
-     const dayNames = ['Paz','Pzt','Sal','Çar','Per','Cum','Cmt'];
-     return { 
-       display: `${d.getDate()} ${dayNames[d.getDay()]}`, 
-       full: `${d.getDate()}/${d.getMonth()+1} ${dayNames[d.getDay()]}`,
-       val: d.toISOString().split('T')[0]
-     };
-  });
-  const HOURS = ['18:00', '19:00', '20:00', '21:00', '22:00', '23:00', '00:00'];
-  const POPULAR_PITCHES = [
-    "Kadıköy Arena",
-    "Levent Spor Kompleksi",
-    "Beşiktaş Belediye Sahası",
-    "Olimpik Halı Saha, Üsküdar",
-    "Florya Halı Saha",
-    "Göztepe Parkı Tesisleri",
-    "Kadıköy Olimpik"
-  ];
-  const [lockoutHours, setLockoutHours] = useState("1");
-
+  const [lockoutHours, setLockoutHours] = useState(3);
   const [selectedGroup, setSelectedGroup] = useState<string | null>(null);
 
-  // Gruba Katıl Modal State'leri
+  // Gruba Katıl / Grup Kur
   const [isJoinGroupModalVisible, setIsJoinGroupModalVisible] = useState(false);
   const [inviteCode, setInviteCode] = useState("");
-
-  // Grup Kurma Modal State'leri
-  const [isCreateGroupModalVisible, setIsCreateGroupModalVisible] =
-    useState(false);
+  const [isCreateGroupModalVisible, setIsCreateGroupModalVisible] = useState(false);
   const [groupName, setGroupName] = useState("");
-
-  useEffect(() => {
-    if (Platform.OS === 'web') {
-      console.log("Map Picker message event listener registered!");
-      const handleMapMessage = (event: any) => {
-        console.log("PARENT RECEIVED RAW MESSAGE EVENT:", event);
-        console.log("PARENT RECEIVED RAW MESSAGE DATA:", event.data);
-        
-        let data = event.data;
-        if (typeof data === 'string') {
-          try {
-            data = JSON.parse(data);
-            console.log("PARSED STRING MESSAGE DATA TO JSON:", data);
-          } catch (e) {
-            // Not JSON string
-          }
-        }
-        
-        if (data && data.type === 'MAP_LOCATION_SELECTED') {
-          const { location } = data;
-          console.log("Selected Location Address successfully retrieved:", location.address);
-          setMatchLocation(location.address);
-          setIsMapModalVisible(false);
-        }
-      };
-      window.addEventListener('message', handleMapMessage);
-      return () => window.removeEventListener('message', handleMapMessage);
-    }
-  }, []);
 
   useFocusEffect(
     React.useCallback(() => {
@@ -121,16 +71,13 @@ export default function DashboardScreen({ route, navigation }: any) {
 
   const fetchData = async () => {
     try {
-      const myMatchRes = await apiFetch(`${API_URL}/matches?userId=${user.id}&type=my`);
-      const pubMatchRes = await apiFetch(`${API_URL}/matches?userId=${user.id}&type=public`);
-      const groupRes = await apiFetch(`${API_URL}/groups?userId=${user.id}`);
-      const notifRes = await apiFetch(`${API_URL}/notifications?userId=${user.id}`);
-      const myData = await myMatchRes.json();
-      const pubData = await pubMatchRes.json();
-      const gData = await groupRes.json();
-      const nData = await notifRes.json();
-      if (Array.isArray(myData)) setMyMatches(myData);
-      if (Array.isArray(pubData)) setPublicMatches(pubData);
+      const [matchRes, groupRes, notifRes] = await Promise.all([
+        apiFetch(`${API_URL}/matches?type=my`),
+        apiFetch(`${API_URL}/groups`),
+        apiFetch(`${API_URL}/notifications`),
+      ]);
+      const [mData, gData, nData] = await Promise.all([matchRes.json(), groupRes.json(), notifRes.json()]);
+      if (Array.isArray(mData)) setMatches(mData);
       if (Array.isArray(gData)) setGroups(gData);
       if (Array.isArray(nData)) setNotifications(nData);
     } catch (e) {
@@ -138,11 +85,20 @@ export default function DashboardScreen({ route, navigation }: any) {
     }
   };
 
+  const upcomingMatches = matches
+    .filter((m) => !isPastMatch(m))
+    .sort((a, b) => Number(a.matchTimestamp) - Number(b.matchTimestamp));
+  const pastMatches = matches
+    .filter((m) => isPastMatch(m))
+    .sort((a, b) => Number(b.matchTimestamp) - Number(a.matchTimestamp))
+    .slice(0, 10);
+  const unanswered = upcomingMatches.filter((m) => !m.myStatus);
+
   const handleOpenNotifications = async () => {
     setIsNotificationsVisible(true);
     try {
       await apiFetch(`${API_URL}/notifications/read`, { method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({ }) });
-      setNotifications(prev => prev.map(n => ({...n, isRead: 1})));
+      setNotifications(prev => prev.map(n => ({...n, isRead: true})));
     } catch(e) {}
   };
 
@@ -151,138 +107,131 @@ export default function DashboardScreen({ route, navigation }: any) {
     const month = date.getMonth();
     const firstDay = new Date(year, month, 1);
     const lastDay = new Date(year, month + 1, 0);
-    
-    const days = [];
-    let startDayOfWeek = firstDay.getDay(); 
+    const days: (Date | null)[] = [];
+    let startDayOfWeek = firstDay.getDay();
     startDayOfWeek = startDayOfWeek === 0 ? 6 : startDayOfWeek - 1;
-
-    for (let i = 0; i < startDayOfWeek; i++) {
-      days.push(null);
-    }
-
-    for (let i = 1; i <= lastDay.getDate(); i++) {
-      days.push(new Date(year, month, i));
-    }
-    
+    for (let i = 0; i < startDayOfWeek; i++) days.push(null);
+    for (let i = 1; i <= lastDay.getDate(); i++) days.push(new Date(year, month, i));
     return days;
   };
 
-  const handleSelectCalendarDate = (date: Date) => {
-    setCalendarDate(date);
-    const dayNames = ['Paz','Pzt','Sal','Çar','Per','Cum','Cmt'];
-    const formatted = `${date.getDate()}/${date.getMonth()+1} ${dayNames[date.getDay()]}`;
-    setSelectedDate(formatted);
-    setIsCalendarModalVisible(false);
+  const pickGroup = (g: any) => {
+    setSelectedGroup(g.id);
+    // Grubun haftalık sahası varsa onu öner; kullanıcı elle yazdıysa ezme.
+    if (g.weeklyLocation && !matchLocation) setMatchLocation(g.weeklyLocation);
+    if (g.weeklyMaxPlayers) setMaxPlayers(String(g.weeklyMaxPlayers));
+  };
+
+  const openCreateMatch = () => {
+    if (groups.length === 0) {
+      showAlert("Önce bir grup lazım", "Maçlar grup içinde kuruluyor. Yeni bir grup kur ya da arkadaşının davet koduyla katıl.");
+      return;
+    }
+    if (!selectedGroup || !groups.some((g) => g.id === selectedGroup)) pickGroup(groups[0]);
+    setIsModalVisible(true);
+  };
+
+  const resetCreateForm = () => {
+    setMatchLocation("");
+    setCalendarDate(null);
+    setSelectedTime("");
+    setMaxPlayers("14");
+    setLockoutHours(3);
   };
 
   const handleCreateMatch = async () => {
-    let missingFields = [];
-    if (!matchLocation) missingFields.push("Konum");
-    if (!selectedDate) missingFields.push("Tarih");
+    const missingFields = [];
+    if (!selectedGroup) missingFields.push("Grup");
+    if (!matchLocation.trim()) missingFields.push("Saha");
+    if (!calendarDate) missingFields.push("Tarih");
     if (!selectedTime) missingFields.push("Saat");
-    if (!maxPlayers) missingFields.push("Kişi Sayısı");
-
+    if (!(parseInt(maxPlayers) > 1)) missingFields.push("Kişi sayısı");
     if (missingFields.length > 0) {
-      Alert.alert(
-        "Eksik Bilgi",
-        `Lütfen aşağıdaki alanları doldurun:\n\n- ${missingFields.join('\n- ')}`
-      );
+      showAlert("Eksik Bilgi", `Lütfen şunları doldurun:\n\n- ${missingFields.join('\n- ')}`);
       return;
     }
 
-    try {
-      let matchTimestamp = 0;
-      if (calendarDate) {
-          const tParts = selectedTime.split(':');
-          const dObj = new Date(calendarDate);
-          dObj.setHours(parseInt(tParts[0]), parseInt(tParts[1]), 0);
-          matchTimestamp = dObj.getTime();
-      }
+    const [h, min] = selectedTime.split(':').map((x) => parseInt(x, 10));
+    const start = new Date(calendarDate as Date);
+    // 00:00 gibi gece saatleri seçilen günün gecesidir: maç ertesi takvim gününde başlar.
+    if (h < 6) start.setDate(start.getDate() + 1);
+    start.setHours(h, min, 0, 0);
+    if (start.getTime() < Date.now()) {
+      showAlert("Tarih geçmiş", "Seçtiğin gün ve saat geçmişte kalıyor.");
+      return;
+    }
+    const day = calendarDate as Date;
+    const dateLabel = `${day.getDate()}/${day.getMonth() + 1} ${DAY_NAMES_SHORT[day.getDay()]}, ${selectedTime}`;
 
+    try {
       const response = await apiFetch(`${API_URL}/matches`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           groupId: selectedGroup,
-          date: `${selectedDate}, ${selectedTime}`,
+          date: dateLabel,
           time: selectedTime,
-          location: matchLocation,
+          location: matchLocation.trim(),
           maxPlayers: parseInt(maxPlayers),
-          teamAName: matchTeamA || undefined,
-          teamBName: matchTeamB || undefined,
-          matchTimestamp: matchTimestamp,
-          lockoutHours: parseInt(lockoutHours) || 1
+          matchTimestamp: start.getTime(),
+          lockoutHours,
         }),
       });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error);
 
-      Alert.alert("Tebrikler!", "Maç başarıyla oluşturuldu.");
       setIsModalVisible(false);
-      setMatchLocation("");
-      setSelectedDate("");
-      setSelectedTime("");
-      setMatchTeamA("");
-      setMatchTeamB("");
-      setMaxPlayers("14");
-      fetchData(); // Yenile
+      resetCreateForm();
+      fetchData();
+      showAlert("Maç kuruldu", "Gruptaki herkese davet gitti.");
     } catch (error: any) {
-      Alert.alert("Hata", error.message || "Maç oluşturulamadı");
+      showAlert("Hata", error.message || "Maç oluşturulamadı");
     }
   };
 
   const handleCreateGroup = async () => {
-    if (!groupName) {
-      Alert.alert("Eksik Bilgi", "Lütfen grup adını girin.");
+    if (!groupName.trim()) {
+      showAlert("Eksik Bilgi", "Lütfen grup adını girin.");
       return;
     }
-
     try {
       const response = await apiFetch(`${API_URL}/groups`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          name: groupName,
-        }),
+        body: JSON.stringify({ name: groupName.trim() }),
       });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error);
 
-      Alert.alert(
-        "Tebrikler!",
-        `Grup başarıyla oluşturuldu!\nDavet Kodunuz: ${data.group.inviteCode}`,
-      );
       setIsCreateGroupModalVisible(false);
       setGroupName("");
-      fetchData(); // Yenile
+      fetchData();
+      showAlert("Grup kuruldu", `Davet kodun: ${data.group.inviteCode}\n\nGrup sayfasından kodu WhatsApp'ta paylaşabilir, haftalık maçı ayarlayabilirsin.`);
     } catch (error: any) {
-      Alert.alert("Hata", error.message || "Grup oluşturulamadı");
+      showAlert("Hata", error.message || "Grup oluşturulamadı");
     }
   };
 
   const handleJoinGroup = async () => {
-    if (!inviteCode) {
-      Alert.alert("Eksik Bilgi", "Lütfen bir davet kodu girin.");
+    if (!inviteCode.trim()) {
+      showAlert("Eksik Bilgi", "Lütfen bir davet kodu girin.");
       return;
     }
-
     try {
       const response = await apiFetch(`${API_URL}/groups/join`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          inviteCode: inviteCode.toUpperCase(),
-        }),
+        body: JSON.stringify({ inviteCode: inviteCode.trim().toUpperCase() }),
       });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error);
 
-      Alert.alert("Tebrikler!", "Gruba başarıyla katıldınız.");
       setIsJoinGroupModalVisible(false);
       setInviteCode("");
-      fetchData(); // Yenile
+      fetchData();
+      showAlert("Hoş geldin!", "Gruba katıldın.");
     } catch (error: any) {
-      Alert.alert("Hata", error.message || "Gruba katılınamadı");
+      showAlert("Hata", error.message || "Gruba katılınamadı");
     }
   };
 
@@ -299,17 +248,55 @@ export default function DashboardScreen({ route, navigation }: any) {
       const data = await res.json();
       if (res.ok) {
         setNotifications(prev => prev.filter(x => x.id !== n.id));
-        if (data.myStatus === 'RESERVE') Alert.alert("Yedektesin", data.message);
+        if (data.myStatus === 'RESERVE') showAlert("Yedektesin", data.message);
         fetchData();
       } else {
-        Alert.alert("Olmadı", data.error || "Cevabın kaydedilemedi.");
+        showAlert("Olmadı", data.error || "Cevabın kaydedilemedi.");
       }
     } catch (e) {
-      Alert.alert("Hata", "Bağlantı sorunu yaşandı.");
+      showAlert("Hata", "Bağlantı sorunu yaşandı.");
     }
   };
 
-  const currentMatches = matchTab === 'my' ? myMatches : publicMatches;
+  const renderMatchCard = (match: any, past: boolean) => {
+    const s = MY_STATUS_BADGE[match.myStatus ?? 'NONE'] ?? MY_STATUS_BADGE.NONE;
+    return (
+      <TouchableOpacity
+        key={match.id}
+        activeOpacity={0.8}
+        style={[styles.singleRowCard, past && { opacity: 0.85 }]}
+        onPress={() => navigation.navigate("MatchDetails", { match, user })}
+      >
+        <View style={[styles.rowIconContainer, { borderColor: past ? 'rgba(255, 193, 7, 0.3)' : 'rgba(0, 230, 118, 0.3)' }]}>
+          <Ionicons name={past ? "trophy" : "football"} size={20} color={past ? "#FFC107" : "#00E676"} />
+        </View>
+
+        <View style={styles.rowMainInfo}>
+          <Text style={styles.rowTitle} numberOfLines={1}>{formatMatchDate(match)}</Text>
+          <Text style={styles.rowSubtitle} numberOfLines={1}>
+            {past
+              ? `${match.location || 'Saha belirtilmemiş'}${match.groupName ? ` · ${match.groupName}` : ''}`
+              : `${match.activeCount ?? 0}/${match.maxPlayers} kişi · ${match.location || 'Saha belirtilmemiş'}`}
+          </Text>
+        </View>
+
+        <View style={styles.rowRightSection}>
+          {past ? (
+            <View style={[styles.miniBadge, { backgroundColor: 'rgba(255, 193, 7, 0.15)', borderColor: 'rgba(255, 193, 7, 0.4)' }]}>
+              <Text style={[styles.miniBadgeText, { color: '#FFC107', fontWeight: 'bold' }]}>
+                {match.score ? match.score : match.status === 'COMPLETED' ? 'Bitti' : 'Sonuç yok'}
+              </Text>
+            </View>
+          ) : (
+            <View style={[styles.miniBadge, { backgroundColor: s.bg, borderColor: s.border }]}>
+              <Text style={[styles.miniBadgeText, { color: s.color, fontWeight: 'bold' }]}>{s.label}</Text>
+            </View>
+          )}
+          <Ionicons name="chevron-forward" size={16} color="#64748B" style={{ marginLeft: 8 }} />
+        </View>
+      </TouchableOpacity>
+    );
+  };
 
   return (
     <SafeAreaView style={styles.safeArea}>
@@ -336,163 +323,77 @@ export default function DashboardScreen({ route, navigation }: any) {
           </View>
         </View>
 
-        <ScrollView
-          style={styles.scrollContent}
-          showsVerticalScrollIndicator={false}
-        >
+        <ScrollView style={styles.scrollContent} showsVerticalScrollIndicator={false}>
           <View style={styles.quickActionsContainer}>
-            <TouchableOpacity
-              style={styles.actionCard}
-              onPress={() => setIsModalVisible(true)}
-            >
-              <LinearGradient
-                colors={["rgba(0, 230, 118, 0.15)", "rgba(0, 230, 118, 0.05)"]}
-                style={styles.actionGradient}
-              >
+            <TouchableOpacity style={styles.actionCard} onPress={openCreateMatch}>
+              <LinearGradient colors={["rgba(0, 230, 118, 0.15)", "rgba(0, 230, 118, 0.05)"]} style={styles.actionGradient}>
                 <Ionicons name="football" size={20} color="#00E676" />
                 <Text style={styles.actionText}>Maç Kur</Text>
               </LinearGradient>
             </TouchableOpacity>
 
-            <TouchableOpacity
-              style={styles.actionCard}
-              onPress={() => setIsCreateGroupModalVisible(true)}
-            >
-              <LinearGradient
-                colors={["rgba(255, 193, 7, 0.15)", "rgba(255, 193, 7, 0.05)"]}
-                style={styles.actionGradient}
-              >
+            <TouchableOpacity style={styles.actionCard} onPress={() => setIsCreateGroupModalVisible(true)}>
+              <LinearGradient colors={["rgba(255, 193, 7, 0.15)", "rgba(255, 193, 7, 0.05)"]} style={styles.actionGradient}>
                 <Ionicons name="people" size={20} color="#FFC107" />
                 <Text style={styles.actionText}>Grup Kur</Text>
               </LinearGradient>
             </TouchableOpacity>
 
-            <TouchableOpacity
-              style={styles.actionCard}
-              onPress={() => navigation.navigate("Leaderboard", { user })}
-            >
-              <LinearGradient
-                colors={["rgba(168, 85, 247, 0.15)", "rgba(168, 85, 247, 0.05)"]}
-                style={styles.actionGradient}
-              >
+            <TouchableOpacity style={styles.actionCard} onPress={() => navigation.navigate("Leaderboard", { user })}>
+              <LinearGradient colors={["rgba(168, 85, 247, 0.15)", "rgba(168, 85, 247, 0.05)"]} style={styles.actionGradient}>
                 <Ionicons name="trophy" size={20} color="#A855F7" />
                 <Text style={styles.actionText}>Liderler</Text>
               </LinearGradient>
             </TouchableOpacity>
           </View>
 
-          <View style={styles.tabContainer}>
-            <TouchableOpacity onPress={() => setMatchTab('my')} style={[styles.tab, matchTab === 'my' && styles.activeTab]}>
-              <Text style={matchTab === 'my' ? styles.activeTabText : styles.tabText}>Maçlarım</Text>
+          {unanswered.length > 0 && (
+            <TouchableOpacity
+              activeOpacity={0.85}
+              onPress={() => navigation.navigate("MatchDetails", { match: unanswered[0], user })}
+              style={localStyles.answerBanner}
+            >
+              <Ionicons name="alert-circle" size={22} color="#0F172A" />
+              <Text style={localStyles.answerBannerText}>
+                {unanswered.length === 1
+                  ? `${formatMatchDate(unanswered[0])} maçına henüz cevap vermedin`
+                  : `${unanswered.length} maça henüz cevap vermedin`}
+              </Text>
+              <Ionicons name="chevron-forward" size={18} color="#0F172A" />
             </TouchableOpacity>
-            <TouchableOpacity onPress={() => setMatchTab('public')} style={[styles.tab, matchTab === 'public' && styles.activeTab]}>
-              <Text style={matchTab === 'public' ? styles.activeTabText : styles.tabText}>Keşfet</Text>
-            </TouchableOpacity>
-          </View>
+          )}
 
           <View style={styles.sectionHeader}>
-            <Text style={styles.sectionTitle}>{matchTab === 'my' ? 'Yaklaşan Maçlarım' : 'Yaklaşan Açık Maçlar'}</Text>
+            <Text style={styles.sectionTitle}>Yaklaşan Maçlar</Text>
             <TouchableOpacity onPress={fetchData}>
               <Text style={styles.seeAllText}>Yenile</Text>
             </TouchableOpacity>
           </View>
 
-          {currentMatches.filter(m => m.status !== 'COMPLETED').length === 0 ? (
-            <Text
-              style={{
-                color: "#A0A0A0",
-                textAlign: "center",
-                marginVertical: 20,
-              }}
-            >
-              Yaklaşan maç bulunmuyor.
+          {upcomingMatches.length === 0 ? (
+            <Text style={{ color: "#A0A0A0", textAlign: "center", marginVertical: 20 }}>
+              {groups.length === 0
+                ? "Henüz bir grubun yok. Grup kur ya da davet koduyla katıl."
+                : "Yaklaşan maç yok. Grup sayfasından haftalık maçı ayarlarsan her hafta kendiliğinden açılır."}
             </Text>
           ) : (
-            currentMatches.filter(m => m.status !== 'COMPLETED').map((match, index) => (
-              <TouchableOpacity
-                key={`upcoming-${index}`}
-                activeOpacity={0.8}
-                style={styles.singleRowCard}
-                onPress={() => navigation.navigate("MatchDetails", { match, user })}
-              >
-                <View style={[styles.rowIconContainer, { borderColor: 'rgba(0, 230, 118, 0.3)' }]}>
-                  <Ionicons name="football" size={20} color="#00E676" />
-                </View>
-                
-                <View style={styles.rowMainInfo}>
-                  <Text style={styles.rowTitle} numberOfLines={1}>
-                    {match.location || 'Konum Belirtilmemiş'}
-                  </Text>
-                  <Text style={styles.rowSubtitle} numberOfLines={1}>
-                    {match.date || 'Tarih Belirtilmemiş'}{match.groupName ? ` · ${match.groupName}` : ''}
-                  </Text>
-                </View>
-
-                <View style={styles.rowRightSection}>
-                  {(() => {
-                    const s = MY_STATUS_BADGE[match.myStatus ?? 'NONE'] ?? MY_STATUS_BADGE.NONE;
-                    return (
-                      <View style={[styles.miniBadge, { backgroundColor: s.bg, borderColor: s.border }]}>
-                        <Text style={[styles.miniBadgeText, { color: s.color, fontWeight: 'bold' }]}>{s.label}</Text>
-                      </View>
-                    );
-                  })()}
-                  <View style={[styles.miniBadge, { backgroundColor: 'rgba(255, 255, 255, 0.05)', borderColor: 'rgba(255, 255, 255, 0.1)' }]}>
-                    <Text style={[styles.miniBadgeText, { color: '#94A3B8' }]}>{match.activeCount ?? 0}/{match.maxPlayers}</Text>
-                  </View>
-                  <Ionicons name="chevron-forward" size={16} color="#64748B" style={{ marginLeft: 8 }} />
-                </View>
-              </TouchableOpacity>
-            ))
+            upcomingMatches.map((m) => renderMatchCard(m, false))
           )}
 
           <View style={[styles.sectionHeader, {marginTop: 20}]}>
             <Text style={styles.sectionTitle}>Geçmiş Maçlar</Text>
           </View>
 
-          {currentMatches.filter(m => m.status === 'COMPLETED').length === 0 ? (
+          {pastMatches.length === 0 ? (
             <Text style={{color: "#A0A0A0", textAlign: "center", marginVertical: 20}}>
-              Henüz tamamlanmış maç yok.
+              Henüz oynanmış maç yok.
             </Text>
           ) : (
-            currentMatches.filter(m => m.status === 'COMPLETED').map((match, index) => (
-              <TouchableOpacity
-                key={`completed-${index}`}
-                activeOpacity={0.8}
-                style={[styles.singleRowCard, { opacity: 0.85 }]}
-                onPress={() => navigation.navigate("MatchDetails", { match, user })}
-              >
-                <View style={[styles.rowIconContainer, { borderColor: 'rgba(255, 193, 7, 0.3)' }]}>
-                  <Ionicons name="trophy" size={20} color="#FFC107" />
-                </View>
-                
-                <View style={styles.rowMainInfo}>
-                  <Text style={styles.rowTitle} numberOfLines={1}>
-                    {match.location || 'Konum Belirtilmemiş'}
-                  </Text>
-                  <Text style={styles.rowSubtitle}>
-                    {match.date || 'Tarih Belirtilmemiş'}
-                  </Text>
-                </View>
-
-                <View style={styles.rowRightSection}>
-                  {match.score ? (
-                    <View style={[styles.miniBadge, { backgroundColor: 'rgba(255, 193, 7, 0.15)', borderColor: 'rgba(255, 193, 7, 0.4)' }]}>
-                      <Text style={[styles.miniBadgeText, { color: '#FFC107', fontWeight: 'bold' }]}>Skor: {match.score}</Text>
-                    </View>
-                  ) : (
-                    <View style={[styles.miniBadge, { backgroundColor: 'rgba(148, 163, 184, 0.15)', borderColor: 'rgba(148, 163, 184, 0.3)' }]}>
-                      <Text style={[styles.miniBadgeText, { color: '#94A3B8' }]}>Bitti</Text>
-                    </View>
-                  )}
-                  <Ionicons name="chevron-forward" size={16} color="#64748B" style={{ marginLeft: 8 }} />
-                </View>
-              </TouchableOpacity>
-            ))
+            pastMatches.map((m) => renderMatchCard(m, true))
           )}
 
           <View style={[styles.sectionHeader, {marginTop: 30}]}>
-            <Text style={styles.sectionTitle}>Gruplar</Text>
+            <Text style={styles.sectionTitle}>Gruplarım</Text>
             <TouchableOpacity onPress={() => setIsJoinGroupModalVisible(true)} style={{flexDirection: 'row', alignItems: 'center', backgroundColor: 'rgba(33, 150, 243, 0.1)', paddingHorizontal: 12, paddingVertical: 6, borderRadius: 12, borderWidth: 1, borderColor: 'rgba(33, 150, 243, 0.3)'}}>
               <Ionicons name="key-outline" size={14} color="#2196F3" style={{marginRight: 4}} />
               <Text style={{color: '#2196F3', fontSize: 13, fontWeight: 'bold'}}>Kodla Katıl</Text>
@@ -500,152 +401,97 @@ export default function DashboardScreen({ route, navigation }: any) {
           </View>
 
           {groups.length === 0 ? (
-            <Text
-              style={{
-                color: "#A0A0A0",
-                textAlign: "center",
-                marginVertical: 20,
-              }}
-            >
+            <Text style={{ color: "#A0A0A0", textAlign: "center", marginVertical: 20 }}>
               Hiç grup bulunamadı. Yeni bir grup kurun!
             </Text>
           ) : (
-            groups.map((group, index) => (
-              <TouchableOpacity
-                key={`group-${index}`}
-                activeOpacity={0.8}
-                style={styles.singleRowCard}
-                onPress={() => navigation.navigate("GroupDetails", { group, user })}
-              >
-                <View style={[styles.rowIconContainer, { borderColor: 'rgba(33, 150, 243, 0.3)' }]}>
-                  <Ionicons name="shield-checkmark" size={20} color="#2196F3" />
-                </View>
-                
-                <View style={styles.rowMainInfo}>
-                  <Text style={styles.rowTitle} numberOfLines={1}>
-                    {group.name}
-                  </Text>
-                  <Text style={styles.rowSubtitle}>
-                    Davet Kodu: {group.inviteCode}
-                  </Text>
-                </View>
-
-                <View style={styles.rowRightSection}>
-                  <View style={[styles.miniBadge, { backgroundColor: 'rgba(33, 150, 243, 0.15)', borderColor: 'rgba(33, 150, 243, 0.3)' }]}>
-                    <Text style={[styles.miniBadgeText, { color: '#2196F3' }]}>Grup Üyesi</Text>
+            groups.map((group) => {
+              const weekly = formatWeekly(group.weeklyDay, group.weeklyTime);
+              return (
+                <TouchableOpacity
+                  key={group.id}
+                  activeOpacity={0.8}
+                  style={styles.singleRowCard}
+                  onPress={() => navigation.navigate("GroupDetails", { group, user })}
+                >
+                  <View style={[styles.rowIconContainer, { borderColor: 'rgba(33, 150, 243, 0.3)' }]}>
+                    <Ionicons name="shield-checkmark" size={20} color="#2196F3" />
                   </View>
-                  <Ionicons name="chevron-forward" size={16} color="#64748B" style={{ marginLeft: 8 }} />
-                </View>
-              </TouchableOpacity>
-            ))
+                  <View style={styles.rowMainInfo}>
+                    <Text style={styles.rowTitle} numberOfLines={1}>{group.name}</Text>
+                    <Text style={styles.rowSubtitle} numberOfLines={1}>
+                      {weekly ? `${weekly} · ${group.weeklyLocation}` : 'Haftalık maç ayarlanmadı'}
+                    </Text>
+                  </View>
+                  <View style={styles.rowRightSection}>
+                    {group.creatorId === user.id && (
+                      <View style={[styles.miniBadge, { backgroundColor: 'rgba(33, 150, 243, 0.15)', borderColor: 'rgba(33, 150, 243, 0.3)' }]}>
+                        <Text style={[styles.miniBadgeText, { color: '#2196F3' }]}>Kurucu</Text>
+                      </View>
+                    )}
+                    <Ionicons name="chevron-forward" size={16} color="#64748B" style={{ marginLeft: 8 }} />
+                  </View>
+                </TouchableOpacity>
+              );
+            })
           )}
 
           <View style={{ height: 40 }} />
         </ScrollView>
       </View>
 
-      <Modal
-        animationType="slide"
-        transparent={true}
-        visible={isModalVisible}
-        onRequestClose={() => setIsModalVisible(false)}
-      >
-        <KeyboardAvoidingView
-          behavior={Platform.OS === "ios" ? "padding" : undefined}
-          style={styles.modalOverlay}
-        >
+      {/* MAÇ KUR */}
+      <Modal animationType="slide" transparent={true} visible={isModalVisible} onRequestClose={() => setIsModalVisible(false)}>
+        <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : undefined} style={styles.modalOverlay}>
           <View style={styles.modalContent}>
             <View style={styles.modalHeader}>
               <Text style={styles.modalTitle}>Yeni Maç Kur</Text>
-              <TouchableOpacity
-                onPress={() => setIsModalVisible(false)}
-                style={styles.closeModalButton}
-              >
+              <TouchableOpacity onPress={() => setIsModalVisible(false)} style={styles.closeModalButton}>
                 <Ionicons name="close" size={28} color="#A0A0A0" />
               </TouchableOpacity>
             </View>
 
-            <View style={{flexDirection: 'row', alignItems: 'center', marginBottom: 15}}>
-              <View style={[styles.modalInputContainer, {flex: 1, marginBottom: 0}]}>
-                <Ionicons
-                  name="location-outline"
-                  size={20}
-                  color="#00E676"
-                  style={styles.modalIcon}
-                />
+            <ScrollView showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
+              <Text style={localStyles.fieldLabel}>Grup</Text>
+              <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginBottom: 15 }}>
+                {groups.map((g) => (
+                  <TouchableOpacity
+                    key={g.id}
+                    style={[styles.dateBubble, selectedGroup === g.id ? styles.dateBubbleActive : {}]}
+                    onPress={() => pickGroup(g)}
+                  >
+                    <Text style={[styles.dateBubbleText, selectedGroup === g.id ? {color: '#000'} : {}]}>{g.name}</Text>
+                  </TouchableOpacity>
+                ))}
+              </ScrollView>
+
+              <Text style={localStyles.fieldLabel}>Saha</Text>
+              <View style={styles.modalInputContainer}>
+                <Ionicons name="location-outline" size={20} color="#00E676" style={styles.modalIcon} />
                 <TextInput
                   style={styles.modalInput}
-                  placeholder="Örn: Olimpik Halı Saha, Kadıköy"
+                  placeholder="Örn: Olimpik Halı Saha"
                   placeholderTextColor="#A0A0A0"
                   value={matchLocation}
                   onChangeText={setMatchLocation}
                 />
               </View>
-              {Platform.OS === 'web' && (
-                <TouchableOpacity 
-                  style={{
-                    backgroundColor: 'rgba(0, 230, 118, 0.1)', 
-                    borderWidth: 1, 
-                    borderColor: '#00E676', 
-                    borderRadius: 16, 
-                    height: 60, 
-                    justifyContent: 'center', 
-                    alignItems: 'center', 
-                    paddingHorizontal: 15,
-                    marginLeft: 10
-                  }}
-                  onPress={() => setIsMapModalVisible(true)}
-                >
-                  <Ionicons name="map-outline" size={24} color="#00E676" />
-                  <Text style={{color: '#00E676', fontSize: 10, fontWeight: 'bold', marginTop: 2}}>Harita</Text>
-                </TouchableOpacity>
-              )}
-            </View>
 
-            <View style={{ marginBottom: 15 }}>
-              <Text style={{color: '#94A3B8', marginBottom: 8, fontSize: 13}}>Popüler Sahalar (Hızlı Seçim)</Text>
-              <ScrollView horizontal showsHorizontalScrollIndicator={false}>
-                {POPULAR_PITCHES.map((pitch, i) => (
-                  <TouchableOpacity 
-                    key={i} 
-                    style={[styles.dateBubble, matchLocation === pitch ? styles.dateBubbleActive : {}]}
-                    onPress={() => setMatchLocation(pitch)}
-                  >
-                    <Text style={[styles.dateBubbleText, matchLocation === pitch ? {color: '#000'} : {}]}>{pitch}</Text>
-                  </TouchableOpacity>
-                ))}
-              </ScrollView>
-            </View>
-
-            <View style={{ marginBottom: 15 }}>
-              <Text style={{color: '#94A3B8', marginBottom: 6, fontSize: 13}}>Tarih</Text>
-              <TouchableOpacity 
-                style={styles.modalInputContainer} 
-                onPress={() => setIsCalendarModalVisible(true)}
-              >
-                <Ionicons
-                  name="calendar-outline"
-                  size={20}
-                  color="#00E676"
-                  style={styles.modalIcon}
-                />
-                <Text style={{ 
-                  color: selectedDate ? '#FFFFFF' : '#A0A0A0', 
-                  fontSize: 16,
-                  flex: 1,
-                  paddingTop: Platform.OS === 'web' ? 18 : 0
-                }}>
-                  {selectedDate || "Tarih Seçmek İçin Dokunun..."}
+              <Text style={localStyles.fieldLabel}>Tarih</Text>
+              <TouchableOpacity style={styles.modalInputContainer} onPress={() => setIsCalendarModalVisible(true)}>
+                <Ionicons name="calendar-outline" size={20} color="#00E676" style={styles.modalIcon} />
+                <Text style={{ color: calendarDate ? '#FFFFFF' : '#A0A0A0', fontSize: 16, flex: 1 }}>
+                  {calendarDate
+                    ? `${calendarDate.getDate()}/${calendarDate.getMonth() + 1} ${DAY_NAMES_SHORT[calendarDate.getDay()]}`
+                    : "Tarih seçmek için dokun"}
                 </Text>
               </TouchableOpacity>
-            </View>
 
-            <View style={{ marginBottom: 15 }}>
-              <Text style={{color: '#94A3B8', marginBottom: 8, fontSize: 13}}>Saat Seçin</Text>
-              <ScrollView horizontal showsHorizontalScrollIndicator={false}>
-                {HOURS.map((h, i) => (
-                  <TouchableOpacity 
-                    key={i} 
+              <Text style={localStyles.fieldLabel}>Saat</Text>
+              <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginBottom: 6 }}>
+                {HOURS.map((h) => (
+                  <TouchableOpacity
+                    key={h}
                     style={[styles.timeBubble, selectedTime === h ? styles.timeBubbleActive : {}]}
                     onPress={() => setSelectedTime(h)}
                   >
@@ -653,130 +499,81 @@ export default function DashboardScreen({ route, navigation }: any) {
                   </TouchableOpacity>
                 ))}
               </ScrollView>
-            </View>
+              {selectedTime.startsWith('00') && calendarDate ? (
+                <Text style={localStyles.hint}>
+                  {DAY_NAMES_SHORT[calendarDate.getDay()]} gecesi 00:00 (takvimde ertesi gün) olarak kaydedilir.
+                </Text>
+              ) : <View style={{ height: 10 }} />}
 
-            <View style={{ marginBottom: 15 }}>
-              <Text style={{color: '#94A3B8', marginBottom: 8, fontSize: 13}}>İlişkili Grup (Opsiyonel)</Text>
-              <ScrollView horizontal showsHorizontalScrollIndicator={false}>
-                <TouchableOpacity 
-                  style={[styles.dateBubble, !selectedGroup ? styles.dateBubbleActive : {}]}
-                  onPress={() => setSelectedGroup(null)}
-                >
-                  <Text style={[styles.dateBubbleText, !selectedGroup ? {color: '#000'} : {}]}>Genel Maç</Text>
-                </TouchableOpacity>
-                {groups.map((g, i) => (
-                  <TouchableOpacity 
-                    key={i} 
-                    style={[styles.dateBubble, selectedGroup === g.id ? styles.dateBubbleActive : {}]}
-                    onPress={() => setSelectedGroup(g.id)}
+              <Text style={localStyles.fieldLabel}>Kişi sayısı</Text>
+              <View style={styles.modalInputContainer}>
+                <Ionicons name="people-outline" size={20} color="#00E676" style={styles.modalIcon} />
+                <TextInput
+                  style={styles.modalInput}
+                  placeholder="Örn: 14"
+                  placeholderTextColor="#A0A0A0"
+                  keyboardType="numeric"
+                  value={maxPlayers}
+                  onChangeText={setMaxPlayers}
+                />
+              </View>
+
+              <Text style={localStyles.fieldLabel}>Son değişiklik (maçtan kaç saat önce kilitlensin)</Text>
+              <View style={{ flexDirection: 'row', marginBottom: 15 }}>
+                {LOCKOUT_OPTIONS.map((h) => (
+                  <TouchableOpacity
+                    key={h}
+                    style={[styles.timeBubble, lockoutHours === h ? styles.timeBubbleActive : {}]}
+                    onPress={() => setLockoutHours(h)}
                   >
-                    <Text style={[styles.dateBubbleText, selectedGroup === g.id ? {color: '#000'} : {}]}>{g.name}</Text>
+                    <Text style={[styles.timeBubbleText, lockoutHours === h ? {color: '#000'} : {}]}>{h} sa</Text>
                   </TouchableOpacity>
                 ))}
-              </ScrollView>
-            </View>
-
-            <View style={styles.modalInputContainer}>
-              <Ionicons
-                name="people-outline"
-                size={20}
-                color="#00E676"
-                style={styles.modalIcon}
-              />
-              <TextInput
-                style={styles.modalInput}
-                placeholder="Kişi Sayısı (Örn: 14)"
-                placeholderTextColor="#A0A0A0"
-                keyboardType="numeric"
-                value={maxPlayers}
-                onChangeText={setMaxPlayers}
-              />
-            </View>
-
-            <View style={{flexDirection: 'row', justifyContent: 'space-between'}}>
-              <View style={[styles.modalInputContainer, {flex: 0.48}]}>
-                <Ionicons name="shirt-outline" size={18} color="#2196F3" style={styles.modalIcon} />
-                <TextInput
-                  style={styles.modalInput}
-                  placeholder="A Takımı"
-                  placeholderTextColor="#A0A0A0"
-                  value={matchTeamA}
-                  onChangeText={setMatchTeamA}
-                />
               </View>
-              <View style={[styles.modalInputContainer, {flex: 0.48}]}>
-                <Ionicons name="shirt-outline" size={18} color="#F44336" style={styles.modalIcon} />
-                <TextInput
-                  style={styles.modalInput}
-                  placeholder="B Takımı"
-                  placeholderTextColor="#A0A0A0"
-                  value={matchTeamB}
-                  onChangeText={setMatchTeamB}
-                />
+
+              <View style={{flexDirection: 'row', justifyContent: 'space-between'}}>
+                 <TouchableOpacity style={[styles.createMatchButton, {flex: 0.48, backgroundColor: 'transparent', borderWidth: 1, borderColor: '#334155', borderRadius: 16}]} onPress={() => setIsModalVisible(false)}>
+                    <View style={[styles.createMatchGradient, {backgroundColor: 'transparent'}]}>
+                       <Text style={[styles.createMatchButtonText, {color: '#A0A0A0'}]}>Vazgeç</Text>
+                    </View>
+                 </TouchableOpacity>
+                 <TouchableOpacity style={[styles.createMatchButton, {flex: 0.48, marginTop: 10}]} onPress={handleCreateMatch}>
+                    <LinearGradient colors={["#00C853", "#B2FF59"]} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={styles.createMatchGradient}>
+                       <Text style={styles.createMatchButtonText}>Oluştur</Text>
+                    </LinearGradient>
+                 </TouchableOpacity>
               </View>
-            </View>
-
-            <View style={{flexDirection: 'row', justifyContent: 'space-between'}}>
-               <TouchableOpacity style={[styles.createMatchButton, {flex: 0.48, backgroundColor: 'transparent', borderWidth: 1, borderColor: '#334155', borderRadius: 16}]} onPress={() => setIsModalVisible(false)}>
-                  <View style={[styles.createMatchGradient, {backgroundColor: 'transparent'}]}>
-                     <Text style={[styles.createMatchButtonText, {color: '#A0A0A0'}]}>Vazgeç</Text>
-                  </View>
-               </TouchableOpacity>
-
-               <TouchableOpacity style={[styles.createMatchButton, {flex: 0.48, marginTop: 10}]} onPress={handleCreateMatch}>
-                  <LinearGradient colors={["#00C853", "#B2FF59"]} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={styles.createMatchGradient}>
-                     <Text style={styles.createMatchButtonText}>Oluştur</Text>
-                  </LinearGradient>
-               </TouchableOpacity>
-            </View>
+            </ScrollView>
           </View>
         </KeyboardAvoidingView>
       </Modal>
 
-      <Modal
-        animationType="slide"
-        transparent={true}
-        visible={isCreateGroupModalVisible}
-        onRequestClose={() => setIsCreateGroupModalVisible(false)}
-      >
-        <KeyboardAvoidingView
-          behavior={Platform.OS === "ios" ? "padding" : undefined}
-          style={styles.modalOverlay}
-        >
+      {/* GRUP KUR */}
+      <Modal animationType="slide" transparent={true} visible={isCreateGroupModalVisible} onRequestClose={() => setIsCreateGroupModalVisible(false)}>
+        <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : undefined} style={styles.modalOverlay}>
           <View style={styles.modalContent}>
             <View style={styles.modalHeader}>
               <Text style={styles.modalTitle}>Kendi Grubunu Kur</Text>
-              <TouchableOpacity
-                onPress={() => setIsCreateGroupModalVisible(false)}
-                style={styles.closeModalButton}
-              >
+              <TouchableOpacity onPress={() => setIsCreateGroupModalVisible(false)} style={styles.closeModalButton}>
                 <Ionicons name="close" size={28} color="#A0A0A0" />
               </TouchableOpacity>
             </View>
-
             <View style={styles.modalInputContainer}>
-              <Ionicons
-                name="shield-checkmark"
-                size={20}
-                color="#FFC107"
-                style={styles.modalIcon}
-              />
+              <Ionicons name="shield-checkmark" size={20} color="#FFC107" style={styles.modalIcon} />
               <TextInput
                 style={styles.modalInput}
-                placeholder="Grup Adı (Örn: Cuma Akşam Kadrosu)"
+                placeholder="Grup Adı (Örn: Çarşamba Kadrosu)"
                 placeholderTextColor="#A0A0A0"
                 value={groupName}
                 onChangeText={setGroupName}
               />
             </View>
-
             <View style={{flexDirection: 'row', justifyContent: 'space-between'}}>
                <TouchableOpacity style={[styles.createMatchButton, {flex: 0.48, backgroundColor: 'transparent', borderWidth: 1, borderColor: '#334155', borderRadius: 16}]} onPress={() => setIsCreateGroupModalVisible(false)}>
                   <View style={[styles.createMatchGradient, {backgroundColor: 'transparent'}]}>
                      <Text style={[styles.createMatchButtonText, {color: '#A0A0A0'}]}>Vazgeç</Text>
                   </View>
                </TouchableOpacity>
-
                <TouchableOpacity style={[styles.createMatchButton, {flex: 0.48, marginTop: 10}]} onPress={handleCreateGroup}>
                   <LinearGradient colors={["#FFC107", "#FFE082"]} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={styles.createMatchGradient}>
                      <Text style={styles.createMatchButtonText}>Oluştur</Text>
@@ -787,51 +584,33 @@ export default function DashboardScreen({ route, navigation }: any) {
         </KeyboardAvoidingView>
       </Modal>
 
-      <Modal
-        animationType="fade"
-        transparent={true}
-        visible={isJoinGroupModalVisible}
-        onRequestClose={() => setIsJoinGroupModalVisible(false)}
-      >
-        <KeyboardAvoidingView
-          behavior={Platform.OS === "ios" ? "padding" : undefined}
-          style={styles.modalOverlay}
-        >
+      {/* KODLA KATIL */}
+      <Modal animationType="fade" transparent={true} visible={isJoinGroupModalVisible} onRequestClose={() => setIsJoinGroupModalVisible(false)}>
+        <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : undefined} style={styles.modalOverlay}>
           <View style={styles.modalContent}>
             <View style={styles.modalHeader}>
               <Text style={styles.modalTitle}>Koda Göre Gruba Katıl</Text>
-              <TouchableOpacity
-                onPress={() => setIsJoinGroupModalVisible(false)}
-                style={styles.closeModalButton}
-              >
+              <TouchableOpacity onPress={() => setIsJoinGroupModalVisible(false)} style={styles.closeModalButton}>
                 <Ionicons name="close" size={28} color="#A0A0A0" />
               </TouchableOpacity>
             </View>
-
             <View style={styles.modalInputContainer}>
-              <Ionicons
-                name="barcode-outline"
-                size={20}
-                color="#2196F3"
-                style={styles.modalIcon}
-              />
+              <Ionicons name="barcode-outline" size={20} color="#2196F3" style={styles.modalIcon} />
               <TextInput
                 style={styles.modalInput}
-                placeholder="Davet Kodu (Örn: CUMA20)"
+                placeholder="Davet Kodu (Örn: K7M2QX)"
                 placeholderTextColor="#A0A0A0"
                 value={inviteCode}
                 onChangeText={setInviteCode}
                 autoCapitalize="characters"
               />
             </View>
-
             <View style={{flexDirection: 'row', justifyContent: 'space-between'}}>
                <TouchableOpacity style={[styles.createMatchButton, {flex: 0.48, backgroundColor: 'transparent', borderWidth: 1, borderColor: '#334155', borderRadius: 16}]} onPress={() => setIsJoinGroupModalVisible(false)}>
                   <View style={[styles.createMatchGradient, {backgroundColor: 'transparent'}]}>
                      <Text style={[styles.createMatchButtonText, {color: '#A0A0A0'}]}>Vazgeç</Text>
                   </View>
                </TouchableOpacity>
-
                <TouchableOpacity style={[styles.createMatchButton, {flex: 0.48, marginTop: 10}]} onPress={handleJoinGroup}>
                   <LinearGradient colors={["#2196F3", "#64B5F6"]} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={styles.createMatchGradient}>
                      <Text style={styles.createMatchButtonText}>KATIL</Text>
@@ -842,296 +621,31 @@ export default function DashboardScreen({ route, navigation }: any) {
         </KeyboardAvoidingView>
       </Modal>
 
-      {/* Map Picker Modal */}
-      <Modal
-        animationType="fade"
-        transparent={true}
-        visible={isMapModalVisible}
-        onRequestClose={() => setIsMapModalVisible(false)}
-      >
-        <View style={styles.modalOverlay}>
-          <View style={[styles.modalContent, { height: '80%', paddingBottom: 20 }]}>
-            <View style={styles.modalHeader}>
-              <Text style={styles.modalTitle}>Haritadan Saha Seç</Text>
-              <TouchableOpacity
-                onPress={() => setIsMapModalVisible(false)}
-                style={styles.closeModalButton}
-              >
-                <Ionicons name="close" size={28} color="#A0A0A0" />
-              </TouchableOpacity>
-            </View>
-
-            {Platform.OS === 'web' ? (
-              <iframe
-                style={{ width: '100%', height: '100%', minHeight: 450, borderRadius: 16, border: 'none' }}
-                srcDoc={`
-                  <!DOCTYPE html>
-                  <html>
-                  <head>
-                    <meta charset="utf-8" />
-                    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-                    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-                    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-                    <style>
-                      html, body, #map {
-                        height: 100%;
-                        margin: 0;
-                        padding: 0;
-                        background-color: #0F172A;
-                        font-family: system-ui, -apple-system, sans-serif;
-                      }
-                      #search-box {
-                        position: absolute;
-                        top: 15px;
-                        left: 15px;
-                        z-index: 1000;
-                        background: #1E293B;
-                        padding: 8px;
-                        border-radius: 12px;
-                        display: flex;
-                        box-shadow: 0 4px 20px rgba(0,0,0,0.3);
-                        border: 1px solid rgba(255,255,255,0.08);
-                      }
-                      #search-input {
-                        background: rgba(0,0,0,0.2);
-                        color: #FFF;
-                        border: 1px solid rgba(255,255,255,0.1);
-                        padding: 8px 12px;
-                        border-radius: 8px;
-                        outline: none;
-                        width: 220px;
-                        font-size: 14px;
-                      }
-                      #search-btn {
-                        background: #00E676;
-                        border: none;
-                        padding: 8px 16px;
-                        color: #000;
-                        font-weight: bold;
-                        border-radius: 8px;
-                        margin-left: 8px;
-                        cursor: pointer;
-                        font-size: 14px;
-                        transition: all 0.2s;
-                      }
-                      #search-btn:hover {
-                        opacity: 0.9;
-                      }
-                      #select-btn {
-                        position: absolute;
-                        bottom: 25px;
-                        left: 50%;
-                        transform: translateX(-50%);
-                        z-index: 1000;
-                        background: #00E676;
-                        color: #000;
-                        border: none;
-                        padding: 14px 28px;
-                        font-size: 16px;
-                        font-weight: bold;
-                        border-radius: 30px;
-                        cursor: pointer;
-                        box-shadow: 0 8px 25px rgba(0,230,118,0.4);
-                        transition: transform 0.2s;
-                      }
-                      #select-btn:active {
-                        transform: translateX(-50%) scale(0.95);
-                      }
-                      .leaflet-popup-content-wrapper {
-                        background-color: #1E293B;
-                        color: #FFF;
-                        border: 1px solid rgba(255,255,255,0.1);
-                        border-radius: 12px;
-                      }
-                      .leaflet-popup-tip {
-                        background-color: #1E293B;
-                      }
-                      .leaflet-control-zoom {
-                        border: 1px solid rgba(255,255,255,0.1) !important;
-                        box-shadow: 0 4px 20px rgba(0,0,0,0.3) !important;
-                      }
-                      .leaflet-control-zoom-in, .leaflet-control-zoom-out {
-                        background-color: #1E293B !important;
-                        color: #FFF !important;
-                        border-bottom: 1px solid rgba(255,255,255,0.1) !important;
-                      }
-                    </style>
-                  </head>
-                  <body>
-                    <div id="search-box">
-                      <input type="text" id="search-input" placeholder="Saha, mahalle veya ilçe ara..." />
-                      <button id="search-btn">Ara</button>
-                    </div>
-                    <button id="select-btn" style="display:none;">Bu Konumu Seç ⚽</button>
-                    <div id="map"></div>
-
-                    <script>
-                      var map = L.map('map').setView([41.0082, 28.9784], 12);
-                      
-                      L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-                        maxZoom: 19,
-                        attribution: '© OpenStreetMap'
-                      }).addTo(map);
-
-                      var marker;
-                      var selectedLocation = null;
-
-                      function onMapClick(e) {
-                        var lat = e.latlng.lat;
-                        var lng = e.latlng.lng;
-                        console.log("Map clicked at coordinate:", lat, lng);
-                        
-                        if (marker) {
-                          marker.setLatLng(e.latlng);
-                        } else {
-                          marker = L.marker(e.latlng).addTo(map);
-                        }
-
-                        document.getElementById('select-btn').style.display = 'block';
-
-                        selectedLocation = {
-                          address: lat.toFixed(5) + ", " + lng.toFixed(5),
-                          lat: lat,
-                          lon: lng
-                        };
-                        marker.bindPopup("Yükleniyor...").openPopup();
-
-                        fetch('https://nominatim.openstreetmap.org/reverse?format=json&lat=' + lat + '&lon=' + lng + '&accept-language=tr')
-                          .then(response => response.json())
-                          .then(data => {
-                            var name = data.display_name;
-                            var addressParts = [];
-                            
-                            if (data.address.amenity) addressParts.push(data.address.amenity);
-                            else if (data.address.leisure) addressParts.push(data.address.leisure);
-                            else if (data.address.stadium) addressParts.push(data.address.stadium);
-                            else if (data.address.road) addressParts.push(data.address.road);
-                            
-                            if (data.address.suburb) addressParts.push(data.address.suburb);
-                            else if (data.address.neighbourhood) addressParts.push(data.address.neighbourhood);
-                            
-                            if (data.address.town) addressParts.push(data.address.town);
-                            else if (data.address.city_district) addressParts.push(data.address.city_district);
-                            else if (data.address.city) addressParts.push(data.address.city);
-
-                            var shortAddress = addressParts.join(', ') || name;
-                            selectedLocation = {
-                              address: shortAddress,
-                              lat: lat,
-                              lon: lng
-                            };
-
-                            marker.bindPopup("<b style='color:#00E676; font-size:14px;'>Seçilen Konum:</b><br/><span style='font-size:12px;'>" + shortAddress + "</span>").openPopup();
-                          })
-                          .catch(err => {
-                            selectedLocation = {
-                              address: lat.toFixed(4) + ", " + lng.toFixed(4),
-                              lat: lat,
-                              lon: lng
-                            };
-                            marker.bindPopup("Koordinat: " + lat.toFixed(4) + ", " + lng.toFixed(4)).openPopup();
-                          });
-                      }
-
-                      map.on('click', onMapClick);
-
-                      document.getElementById('search-btn').addEventListener('click', function() {
-                        var query = document.getElementById('search-input').value;
-                        if (!query) return;
-                        fetch('https://nominatim.openstreetmap.org/search?format=json&q=' + encodeURIComponent(query) + '&accept-language=tr')
-                          .then(response => response.json())
-                          .then(results => {
-                            if (results && results.length > 0) {
-                              var first = results[0];
-                              var latlng = [parseFloat(first.lat), parseFloat(first.lon)];
-                              map.setView(latlng, 15);
-                              onMapClick({ latlng: L.latLng(latlng[0], latlng[1]) });
-                            } else {
-                              alert('Konum bulunamadı.');
-                            }
-                          });
-                      });
-
-                      document.getElementById('search-input').addEventListener('keypress', function(e) {
-                        if (e.key === 'Enter') {
-                          document.getElementById('search-btn').click();
-                        }
-                      });
-
-                      document.getElementById('select-btn').addEventListener('click', function() {
-                        if (selectedLocation) {
-                          var payload = {
-                            type: 'MAP_LOCATION_SELECTED',
-                            location: selectedLocation
-                          };
-                          console.log('Sending MAP_LOCATION_SELECTED from iframe:', payload);
-                          // Post both as raw object and as stringified JSON
-                          window.parent.postMessage(payload, '*');
-                          window.parent.postMessage(JSON.stringify(payload), '*');
-                        }
-                      });
-                    </script>
-                  </body>
-                  </html>
-                `}
-              />
-            ) : (
-              <Text style={{ color: '#FFF', textAlign: 'center', marginTop: 20 }}>Harita yalnızca web tarayıcısında kullanılabilir.</Text>
-            )}
-          </View>
-        </View>
-      </Modal>
-
-      {/* Calendar Picker Modal */}
-      <Modal
-        animationType="fade"
-        transparent={true}
-        visible={isCalendarModalVisible}
-        onRequestClose={() => setIsCalendarModalVisible(false)}
-      >
+      {/* TAKVİM */}
+      <Modal animationType="fade" transparent={true} visible={isCalendarModalVisible} onRequestClose={() => setIsCalendarModalVisible(false)}>
         <View style={[styles.modalOverlay, { justifyContent: 'center', alignItems: 'center', backgroundColor: 'rgba(0, 0, 0, 0.8)' }]}>
-          <View style={[styles.modalContent, { 
-            width: Platform.OS === 'web' ? 360 : '90%', 
-            borderRadius: 24, 
-            borderWidth: 1, 
-            borderColor: 'rgba(0, 230, 118, 0.3)',
-            padding: 20,
-            paddingBottom: 25,
-            borderTopLeftRadius: 24,
-            borderTopRightRadius: 24,
-            borderTopWidth: 1,
-            borderTopColor: "rgba(0, 230, 118, 0.3)",
+          <View style={[styles.modalContent, {
+            width: Platform.OS === 'web' ? 360 : '90%',
+            borderRadius: 24, borderWidth: 1, borderColor: 'rgba(0, 230, 118, 0.3)',
+            padding: 20, paddingBottom: 25,
+            borderTopLeftRadius: 24, borderTopRightRadius: 24, borderTopWidth: 1, borderTopColor: "rgba(0, 230, 118, 0.3)",
           }]}>
             <View style={[styles.modalHeader, { marginBottom: 15 }]}>
               <Text style={styles.modalTitle}>Tarih Seç</Text>
-              <TouchableOpacity
-                onPress={() => setIsCalendarModalVisible(false)}
-                style={styles.closeModalButton}
-              >
+              <TouchableOpacity onPress={() => setIsCalendarModalVisible(false)} style={styles.closeModalButton}>
                 <Ionicons name="close" size={28} color="#A0A0A0" />
               </TouchableOpacity>
             </View>
 
             <View style={{ backgroundColor: 'rgba(0,0,0,0.2)', padding: 12, borderRadius: 16, borderWidth: 1, borderColor: 'rgba(255,255,255,0.05)' }}>
               <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
-                <TouchableOpacity onPress={() => {
-                  const d = new Date(currentMonth);
-                  d.setMonth(d.getMonth() - 1);
-                  setCurrentMonth(d);
-                }} style={{ padding: 8 }}>
+                <TouchableOpacity onPress={() => { const d = new Date(currentMonth); d.setMonth(d.getMonth() - 1); setCurrentMonth(d); }} style={{ padding: 8 }}>
                   <Ionicons name="chevron-back" size={20} color="#00E676" />
                 </TouchableOpacity>
                 <Text style={{ color: '#FFF', fontWeight: 'bold', fontSize: 16 }}>
-                  {(() => {
-                    const months = ["Ocak", "Şubat", "Mart", "Nisan", "Mayıs", "Haziran", "Temmuz", "Ağustos", "Eylül", "Ekim", "Kasım", "Aralık"];
-                    return `${months[currentMonth.getMonth()]} ${currentMonth.getFullYear()}`;
-                  })()}
+                  {["Ocak", "Şubat", "Mart", "Nisan", "Mayıs", "Haziran", "Temmuz", "Ağustos", "Eylül", "Ekim", "Kasım", "Aralık"][currentMonth.getMonth()]} {currentMonth.getFullYear()}
                 </Text>
-                <TouchableOpacity onPress={() => {
-                  const d = new Date(currentMonth);
-                  d.setMonth(d.getMonth() + 1);
-                  setCurrentMonth(d);
-                }} style={{ padding: 8 }}>
+                <TouchableOpacity onPress={() => { const d = new Date(currentMonth); d.setMonth(d.getMonth() + 1); setCurrentMonth(d); }} style={{ padding: 8 }}>
                   <Ionicons name="chevron-forward" size={20} color="#00E676" />
                 </TouchableOpacity>
               </View>
@@ -1143,65 +657,36 @@ export default function DashboardScreen({ route, navigation }: any) {
               </View>
 
               <View style={{ flexDirection: 'row', flexWrap: 'wrap' }}>
-                {(() => {
-                  const days = getDaysInMonth(currentMonth);
-                  return days.map((day, i) => {
-                    if (!day) return <View key={`empty-${i}`} style={{ width: '14.28%', height: 36 }} />;
-                    
-                    const isSelected = calendarDate && 
-                      day.getDate() === calendarDate.getDate() && 
-                      day.getMonth() === calendarDate.getMonth() && 
-                      day.getFullYear() === calendarDate.getFullYear();
-                      
-                    const isToday = (() => {
-                      const today = new Date();
-                      return day.getDate() === today.getDate() && 
-                        day.getMonth() === today.getMonth() && 
-                        day.getFullYear() === today.getFullYear();
-                    })();
-
-                    const isPast = (() => {
-                      const today = new Date();
-                      today.setHours(0,0,0,0);
-                      return day < today;
-                    })();
-
-                    return (
-                      <TouchableOpacity
-                        key={`day-${i}`}
-                        disabled={isPast}
-                        style={{
-                          width: '14.28%',
-                          height: 36,
-                          justifyContent: 'center',
-                          alignItems: 'center',
-                          borderRadius: 8,
-                          backgroundColor: isSelected ? '#00E676' : 'transparent',
-                          borderWidth: isToday ? 1 : 0,
-                          borderColor: '#00E676',
-                          opacity: isPast ? 0.25 : 1
-                        }}
-                        onPress={() => handleSelectCalendarDate(day)}
-                      >
-                        <Text style={{
-                          color: isSelected ? '#000' : '#FFF',
-                          fontWeight: 'bold',
-                          fontSize: 13
-                        }}>
-                          {day.getDate()}
-                        </Text>
-                      </TouchableOpacity>
-                    );
-                  });
-                })()}
+                {getDaysInMonth(currentMonth).map((day, i) => {
+                  if (!day) return <View key={`empty-${i}`} style={{ width: '14.28%', height: 36 }} />;
+                  const sameDay = (a: Date, b: Date) => a.getDate() === b.getDate() && a.getMonth() === b.getMonth() && a.getFullYear() === b.getFullYear();
+                  const isSelected = calendarDate ? sameDay(day, calendarDate) : false;
+                  const isToday = sameDay(day, new Date());
+                  const todayStart = new Date(); todayStart.setHours(0, 0, 0, 0);
+                  const isPast = day < todayStart;
+                  return (
+                    <TouchableOpacity
+                      key={`day-${i}`}
+                      disabled={isPast}
+                      style={{
+                        width: '14.28%', height: 36, justifyContent: 'center', alignItems: 'center', borderRadius: 8,
+                        backgroundColor: isSelected ? '#00E676' : 'transparent',
+                        borderWidth: isToday ? 1 : 0, borderColor: '#00E676', opacity: isPast ? 0.25 : 1
+                      }}
+                      onPress={() => { setCalendarDate(day); setIsCalendarModalVisible(false); }}
+                    >
+                      <Text style={{ color: isSelected ? '#000' : '#FFF', fontWeight: 'bold', fontSize: 13 }}>{day.getDate()}</Text>
+                    </TouchableOpacity>
+                  );
+                })}
               </View>
             </View>
           </View>
         </View>
       </Modal>
 
-      {/* Notifications Modal */}
-      <Modal visible={isNotificationsVisible} transparent animationType="slide">
+      {/* BİLDİRİMLER */}
+      <Modal visible={isNotificationsVisible} transparent animationType="slide" onRequestClose={() => setIsNotificationsVisible(false)}>
          <View style={{flex: 1, backgroundColor: 'rgba(0,0,0,0.8)', paddingTop: 60}}>
             <View style={{flex: 1, backgroundColor: '#1E293B', borderTopLeftRadius: 30, borderTopRightRadius: 30, padding: 25}}>
                <View style={{flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20}}>
@@ -1210,19 +695,19 @@ export default function DashboardScreen({ route, navigation }: any) {
                    <Ionicons name="close" size={28} color="#A0A0A0" />
                  </TouchableOpacity>
                </View>
-               
+
                <ScrollView>
                  {notifications.length === 0 ? (
                    <Text style={{color: '#94A3B8', textAlign: 'center', marginTop: 50}}>Henüz bir bildiriminiz yok.</Text>
                  ) : (
-                   notifications.map((n, i) => (
-                     <View key={i} style={{backgroundColor: 'rgba(255,255,255,0.05)', padding: 15, borderRadius: 12, marginBottom: 10, borderWidth: 1, borderColor: 'rgba(255,255,255,0.05)'}}>
+                   notifications.map((n) => (
+                     <View key={n.id} style={{backgroundColor: 'rgba(255,255,255,0.05)', padding: 15, borderRadius: 12, marginBottom: 10, borderWidth: 1, borderColor: 'rgba(255,255,255,0.05)'}}>
                         <View style={{flexDirection: 'row', alignItems: 'center', marginBottom: 5}}>
                            <Ionicons name={n.type === 'MATCH_INVITE' ? "mail-unread" : (n.type === 'MATCH_RESULT' ? "football" : "information-circle")} size={16} color={n.type === 'MATCH_INVITE' ? '#A855F7' : (n.type === 'MATCH_RESULT' ? '#FFC107' : '#00E676')} />
-                           <Text style={{color: '#94A3B8', fontSize: 12, marginLeft: 6}}>{new Date(n.createdAt).toLocaleDateString()} {new Date(n.createdAt).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}</Text>
+                           <Text style={{color: '#94A3B8', fontSize: 12, marginLeft: 6}}>{new Date(n.createdAt).toLocaleDateString('tr-TR')} {new Date(n.createdAt).toLocaleTimeString('tr-TR', {hour: '2-digit', minute:'2-digit'})}</Text>
                         </View>
                         <Text style={{color: '#FFF', fontSize: 14, lineHeight: 20}}>{n.message}</Text>
-                        
+
                         {n.type === 'MATCH_INVITE' && (
                           <View style={{flexDirection: 'row', marginTop: 15, gap: 8}}>
                              <TouchableOpacity style={{flex: 1, backgroundColor: '#00E676', paddingVertical: 10, borderRadius: 8, alignItems: 'center'}} onPress={() => answerMatchInvite(n, 'YES')}>
@@ -1243,10 +728,19 @@ export default function DashboardScreen({ route, navigation }: any) {
             </View>
          </View>
       </Modal>
-
     </SafeAreaView>
   );
 }
+
+const localStyles = StyleSheet.create({
+  answerBanner: {
+    flexDirection: 'row', alignItems: 'center', gap: 10,
+    backgroundColor: '#FFC107', borderRadius: 14, paddingVertical: 12, paddingHorizontal: 14, marginBottom: 10,
+  },
+  answerBannerText: { flex: 1, color: '#0F172A', fontWeight: 'bold', fontSize: 14 },
+  fieldLabel: { color: '#94A3B8', marginBottom: 8, fontSize: 13 },
+  hint: { color: '#FFC107', fontSize: 12, marginBottom: 12 },
+});
 
 const styles = StyleSheet.create({
   safeArea: { flex: 1, backgroundColor: "#0F172A", ...(Platform.OS === 'web' ? { height: '100vh' as any, overflow: 'auto' as any } : {}) },
@@ -1311,89 +805,6 @@ const styles = StyleSheet.create({
   },
   sectionTitle: { fontSize: 20, fontWeight: "bold", color: "#FFFFFF" },
   seeAllText: { color: "#00E676", fontSize: 14, fontWeight: "600" },
-  matchCard: {
-    borderRadius: 20,
-    overflow: "hidden",
-    marginBottom: 25,
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.3,
-    shadowRadius: 10,
-    elevation: 8,
-  },
-  matchGradient: {
-    padding: 20,
-    borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.05)",
-    borderRadius: 20,
-  },
-  matchHeader: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "center",
-    marginBottom: 15,
-  },
-  badge: {
-    backgroundColor: "rgba(0, 230, 118, 0.2)",
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: "rgba(0, 230, 118, 0.5)",
-  },
-  badgeText: { color: "#00E676", fontSize: 12, fontWeight: "bold" },
-  matchDate: { color: "#94A3B8", fontSize: 14 },
-  matchLocation: {
-    color: "#FFFFFF",
-    fontSize: 16,
-    fontWeight: "600",
-  },
-  matchFooter: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "center",
-    borderTopWidth: 1,
-    borderTopColor: "rgba(255,255,255,0.1)",
-    paddingTop: 15,
-  },
-  playerCount: { flexDirection: "row", alignItems: "center" },
-  playerCountText: { color: "#A0A0A0", marginLeft: 8, fontSize: 14 },
-  joinButton: {
-    backgroundColor: "#00E676",
-    paddingHorizontal: 20,
-    paddingVertical: 8,
-    borderRadius: 12,
-  },
-  joinButtonText: { color: "#000000", fontWeight: "bold", fontSize: 14 },
-  groupCard: {
-    flexDirection: "row",
-    alignItems: "center",
-    backgroundColor: "rgba(255, 255, 255, 0.03)",
-    borderRadius: 16,
-    padding: 15,
-    marginBottom: 12,
-    borderWidth: 1,
-    borderColor: "rgba(255, 255, 255, 0.05)",
-  },
-  groupIconContainer: {
-    width: 48,
-    height: 48,
-    borderRadius: 24,
-    backgroundColor: "rgba(255,255,255,0.05)",
-    justifyContent: "center",
-    alignItems: "center",
-    marginRight: 15,
-    borderWidth: 1,
-    borderColor: "rgba(0, 230, 118, 0.3)",
-  },
-  groupInfo: { flex: 1 },
-  groupName: {
-    color: "#FFFFFF",
-    fontSize: 16,
-    fontWeight: "600",
-    marginBottom: 4,
-  },
-  groupRole: { color: "#94A3B8", fontSize: 13 },
   modalOverlay: {
     flex: 1,
     backgroundColor: "rgba(0, 0, 0, 0.7)",
@@ -1504,36 +915,5 @@ const styles = StyleSheet.create({
   miniBadgeText: {
     fontSize: 11,
     fontWeight: "600",
-  },
-  tabContainer: {
-    flexDirection: 'row',
-    marginBottom: 20,
-    backgroundColor: 'rgba(255, 255, 255, 0.05)',
-    borderRadius: 20,
-    padding: 4,
-  },
-  tab: {
-    flex: 1,
-    paddingVertical: 10,
-    alignItems: 'center',
-    borderRadius: 16,
-  },
-  activeTab: {
-    backgroundColor: '#0F172A',
-    shadowColor: '#00E676',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.2,
-    shadowRadius: 8,
-    elevation: 4,
-  },
-  tabText: {
-    color: '#94A3B8',
-    fontSize: 14,
-    fontWeight: 'bold',
-  },
-  activeTabText: {
-    color: '#00E676',
-    fontSize: 14,
-    fontWeight: 'bold',
   },
 });

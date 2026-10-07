@@ -10,9 +10,10 @@ import {
   Platform,
   Image,
   Modal,
-  TextInput,
-  KeyboardAvoidingView
+  ActivityIndicator,
 } from 'react-native';
+import * as ImagePicker from 'expo-image-picker';
+import { ImageManipulator, SaveFormat } from 'expo-image-manipulator';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
@@ -32,15 +33,15 @@ export default function ProfileScreen({ navigation, route }: any) {
   });
 
   const [avatarUrl, setAvatarUrl] = useState(user.avatar || '');
-  const [isAvatarModalVisible, setAvatarModalVisible] = useState(false);
-  const [tempAvatarUrl, setTempAvatarUrl] = useState('');
+  const [avatarSaving, setAvatarSaving] = useState(false);
 
   const [isPositionModalVisible, setPositionModalVisible] = useState(false);
   const POSITIONS = ['Kaleci', 'Defans - Stoper', 'Defans - Bek', 'Orta Saha - Ön Libero', 'Orta Saha - 8 Numara', 'Orta Saha - 10 Numara', 'Forvet - Kanat', 'Forvet - Santrafor'];
 
   useEffect(() => {
     if (user.id) {
-      fetch(`${API_URL}/users/${user.id}/stats`)
+      // Not: önceden kimlik bilgisi gönderilmediği için istatistikler hiç yüklenmiyordu.
+      apiFetch(`${API_URL}/users/${user.id}/stats`)
         .then(res => res.json())
         .then(data => {
           if(data && !data.error) setStats(data);
@@ -65,24 +66,41 @@ export default function ProfileScreen({ navigation, route }: any) {
     }
   };
 
-  const handleUpdateAvatar = async () => {
+  const notify = (title: string, msg: string) => {
+    if (Platform.OS === 'web') window.alert(`${title}\n\n${msg}`);
+    else Alert.alert(title, msg);
+  };
+
+  // Galeriden fotoğraf seç -> kare kırp -> 256 px'e küçült -> JPEG olarak kaydet.
+  // Küçük tutuyoruz ki üye listeleri ve kadro hızlı yüklensin (yaklaşık 15-30 KB).
+  const pickAvatar = async () => {
     try {
+      const result = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ['images'],
+        allowsEditing: true,
+        aspect: [1, 1],
+        quality: 1,
+      });
+      if (result.canceled || !result.assets?.[0]) return;
+
+      setAvatarSaving(true);
+      const rendered = await ImageManipulator.manipulate(result.assets[0].uri).resize({ width: 256 }).renderAsync();
+      const saved = await rendered.saveAsync({ compress: 0.7, format: SaveFormat.JPEG, base64: true });
+      if (!saved.base64) throw new Error('no base64');
+      const dataUrl = `data:image/jpeg;base64,${saved.base64}`;
+
       const res = await apiFetch(`${API_URL}/users/${user.id}/avatar`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ avatar: tempAvatarUrl })
+        body: JSON.stringify({ avatar: dataUrl })
       });
-      if (res.ok) {
-        setAvatarUrl(tempAvatarUrl);
-        setAvatarModalVisible(false);
-        user.avatar = tempAvatarUrl; // update local param state
-        if (Platform.OS === 'web') alert('Avatar güncellendi!');
-        else Alert.alert('Başarılı', 'Avatar güncellendi!');
-      }
-    } catch(e) {
-      if (Platform.OS === 'web') alert('Avatar güncellenemedi');
-      else Alert.alert('Hata', 'Avatar güncellenemedi');
+      if (!res.ok) throw new Error('save failed');
+      setAvatarUrl(dataUrl);
+      user.avatar = dataUrl; // önceki ekranlara dönünce de güncel görünsün
+    } catch (e) {
+      notify('Hata', 'Fotoğraf kaydedilemedi. Tekrar dener misin?');
     }
+    setAvatarSaving(false);
   };
 
   const handleLogout = async () => {
@@ -125,7 +143,7 @@ export default function ProfileScreen({ navigation, route }: any) {
         
         {/* Profile Info - FIFA Style Card */}
         <View style={{alignItems: 'center', marginVertical: 20, marginTop: 30}}>
-          <TouchableOpacity activeOpacity={0.9} onPress={() => { setTempAvatarUrl(avatarUrl); setAvatarModalVisible(true); }}>
+          <TouchableOpacity activeOpacity={0.9} onPress={pickAvatar} disabled={avatarSaving}>
             <LinearGradient colors={['#FACC15', '#A16207']} style={styles.fifaCardBg}>
                <View style={styles.fifaCardInner}>
                  <View style={styles.fifaTopLeft}>
@@ -133,7 +151,9 @@ export default function ProfileScreen({ navigation, route }: any) {
                     <Text style={styles.fifaPosition}>{user.position ? user.position.split(' - ')[0].substring(0,3).toUpperCase() : 'ORT'}</Text>
                  </View>
                  <View style={styles.fifaAvatarContainer}>
-                    {avatarUrl ? (
+                    {avatarSaving ? (
+                      <ActivityIndicator color="#A16207" />
+                    ) : avatarUrl ? (
                       <Image source={{ uri: avatarUrl }} style={styles.fifaAvatar} />
                     ) : (
                       <Text style={styles.fifaAvatarInitial}>{user.name?.charAt(0) || 'O'}</Text>
@@ -159,18 +179,6 @@ export default function ProfileScreen({ navigation, route }: any) {
              <Ionicons name="pencil" size={14} color="#00E676" style={{marginLeft: 5}}/>
           </TouchableOpacity>
 
-          <TouchableOpacity
-            onPress={() => navigation.navigate('Availability' as never, { user } as never)}
-            style={styles.availabilityRow}
-            activeOpacity={0.85}
-          >
-            <Ionicons name="calendar" size={22} color="#00E676" />
-            <View style={{ flex: 1, marginLeft: 12 }}>
-              <Text style={styles.availabilityTitle}>Müsaitlik</Text>
-              <Text style={styles.availabilitySub}>Hangi gün / saatlerde oynayabileceğini kaydet</Text>
-            </View>
-            <Ionicons name="chevron-forward" size={20} color="#64748B" />
-          </TouchableOpacity>
         </View>
 
         {/* Profile Badges Section */}
@@ -240,40 +248,13 @@ export default function ProfileScreen({ navigation, route }: any) {
         </View>
 
         {/* Buttons */}
-        <TouchableOpacity style={styles.editProfileButton} onPress={() => { setTempAvatarUrl(avatarUrl); setAvatarModalVisible(true); }}>
-          <Text style={styles.editProfileText}>Fotoğraf Ekle / Düzenle</Text>
+        <TouchableOpacity style={styles.editProfileButton} onPress={pickAvatar} disabled={avatarSaving}>
+          <Text style={styles.editProfileText}>{avatarSaving ? 'Kaydediliyor...' : 'Galeriden Fotoğraf Seç'}</Text>
           <Ionicons name="camera-outline" size={20} color="#FFFFFF" style={{marginLeft: 10}} />
         </TouchableOpacity>
 
         <View style={{height: 50}} />
       </ScrollView>
-
-      {/* Avatar Modal */}
-      <Modal visible={isAvatarModalVisible} transparent animationType="slide">
-        <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.modalOverlay}>
-          <View style={styles.modalContent}>
-            <Text style={styles.modalTitle}>Profil Resmini Değiştir</Text>
-            <View style={styles.modalInputContainer}>
-              <Ionicons name="link-outline" size={20} color="#00E676" style={{ marginRight: 10 }} />
-              <TextInput 
-                style={styles.modalInput}
-                placeholder="Resim linki (örn: https://i.imgur.com/...) "
-                placeholderTextColor="#A0A0A0"
-                value={tempAvatarUrl}
-                onChangeText={setTempAvatarUrl}
-              />
-            </View>
-            <TouchableOpacity style={styles.saveBtn} onPress={handleUpdateAvatar}>
-               <LinearGradient colors={['#00C853', '#B2FF59']} start={{x: 0, y: 0}} end={{x: 1, y: 0}} style={styles.saveBtnGradient}>
-                 <Text style={styles.saveBtnText}>AVATARI KAYDET</Text>
-               </LinearGradient>
-            </TouchableOpacity>
-            <TouchableOpacity style={styles.cancelBtn} onPress={() => setAvatarModalVisible(false)}>
-               <Text style={styles.cancelBtnText}>İptal Et</Text>
-            </TouchableOpacity>
-          </View>
-        </KeyboardAvoidingView>
-      </Modal>
 
       {/* Position Modal */}
       <Modal visible={isPositionModalVisible} transparent animationType="slide">
@@ -311,8 +292,6 @@ const styles = StyleSheet.create({
   headerTitle: { fontSize: 20, fontWeight: 'bold', color: '#FFFFFF' },
   settingsButton: { padding: 5, marginRight: -5 },
   container: { flex: 1, paddingHorizontal: 20 },
-  
-  profileHero: { alignItems: 'center', marginVertical: 20 },
   fifaCardBg: { width: 230, height: 330, borderRadius: 20, padding: 3, elevation: 15, shadowColor: '#FACC15', shadowOpacity: 0.4, shadowRadius: 20, shadowOffset: {width: 0, height: 10} },
   fifaCardInner: { flex: 1, backgroundColor: 'rgba(0,0,0,0.15)', borderRadius: 17, padding: 15, alignItems: 'center', overflow: 'hidden' },
   fifaTopLeft: { position: 'absolute', top: 25, left: 20, alignItems: 'center' },
@@ -348,30 +327,10 @@ const styles = StyleSheet.create({
   modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.8)', justifyContent: 'flex-end' },
   modalContent: { backgroundColor: '#1E293B', borderTopLeftRadius: 30, borderTopRightRadius: 30, padding: 25, paddingBottom: 40, borderTopWidth: 1, borderTopColor: 'rgba(0, 230, 118, 0.3)' },
   modalTitle: { fontSize: 20, fontWeight: 'bold', color: '#FFFFFF', marginBottom: 20, textAlign: 'center' },
-  modalInputContainer: { flexDirection: 'row', alignItems: 'center', backgroundColor: 'rgba(0,0,0,0.3)', borderRadius: 16, paddingHorizontal: 20, height: 60, marginBottom: 20, borderWidth: 1, borderColor: 'rgba(255,255,255,0.05)' },
-  modalInput: { flex: 1, color: '#FFFFFF', fontSize: 15 },
-  saveBtn: { borderRadius: 16, overflow: 'hidden', marginBottom: 15 },
-  saveBtnGradient: { paddingVertical: 18, alignItems: 'center' },
-  saveBtnText: { color: '#000', fontSize: 16, fontWeight: 'bold', letterSpacing: 1 },
   cancelBtn: { paddingVertical: 15, alignItems: 'center' },
   cancelBtnText: { color: '#EF4444', fontSize: 16, fontWeight: 'bold' },
   positionOptionBtn: { paddingVertical: 15, borderBottomWidth: 1, borderBottomColor: 'rgba(255,255,255,0.05)', alignItems: 'center' },
   positionOptionText: { color: '#00E676', fontSize: 16, fontWeight: '500' },
-
-  availabilityRow: {
-    marginTop: 20,
-    width: '100%',
-    maxWidth: 360,
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: 'rgba(0, 230, 118, 0.08)',
-    borderRadius: 16,
-    padding: 16,
-    borderWidth: 1,
-    borderColor: 'rgba(0, 230, 118, 0.25)',
-  },
-  availabilityTitle: { color: '#FFFFFF', fontSize: 16, fontWeight: '700' },
-  availabilitySub: { color: '#94A3B8', fontSize: 12, marginTop: 4 },
   badgeItem: {
     flexDirection: 'row',
     alignItems: 'center',

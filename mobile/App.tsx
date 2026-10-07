@@ -8,7 +8,6 @@ import ProfileScreen from "./src/screens/ProfileScreen";
 import LeaderboardScreen from "./src/screens/LeaderboardScreen";
 import MatchDetailsScreen from "./src/screens/MatchDetailsScreen";
 import GroupDetailsScreen from "./src/screens/GroupDetailsScreen";
-import AvailabilityScreen from "./src/screens/AvailabilityScreen";
 
 import { Platform } from "react-native";
 
@@ -41,7 +40,6 @@ export default function App() {
         <Stack.Screen name="Leaderboard" component={LeaderboardScreen} />
         <Stack.Screen name="MatchDetails" component={MatchDetailsScreen} />
         <Stack.Screen name="GroupDetails" component={GroupDetailsScreen} />
-        <Stack.Screen name="Availability" component={AvailabilityScreen} />
       </Stack.Navigator>
     </NavigationContainer>
   );

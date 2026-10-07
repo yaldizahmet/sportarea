@@ -14,6 +14,15 @@
         "projectId": "95651474-2087-4805-9a20-f15db130bddb"
       }
     },
-    "owner": "thend"
+    "owner": "thend",
+    "plugins": [
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Profil fotoğrafını seçebilmen için galerine erişmemiz gerekiyor.",
+          "cameraPermission": false
+        }
+      ]
+    ]
   }
 }
