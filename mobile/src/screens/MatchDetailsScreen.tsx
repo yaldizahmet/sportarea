@@ -391,12 +391,15 @@ export default function MatchDetailsScreen({ route, navigation }: any) {
   };
 
   const activePlayers = players.filter((p: any) => p.status === 'ACTIVE');
-  const reserves = players.filter((p: any) => p.status === 'RESERVE');
-  const maybePlayers = players.filter((p: any) => p.status === 'MAYBE');
-  const pendingPlayers = players.filter((p: any) => p.status === 'PENDING');
-  const declinedPlayers = players.filter((p: any) => p.status === 'DECLINED');
+  const reserves = matchStatus === 'COMPLETED' ? [] : players.filter((p: any) => p.status === 'RESERVE');
+  // Maç bittiyse sadece sahada oynayanlar listelenir (yedek / belki / gelmeyen gizlenir).
+  const isCompleted = matchStatus === 'COMPLETED';
+  const maybePlayers = isCompleted ? [] : players.filter((p: any) => p.status === 'MAYBE');
+  const pendingPlayers = isCompleted ? [] : players.filter((p: any) => p.status === 'PENDING');
+  const declinedPlayers = isCompleted ? [] : players.filter((p: any) => p.status === 'DECLINED');
   // Benim cevabım: ACTIVE / RESERVE (varım), MAYBE, DECLINED, PENDING ya da listede yoksam null
   const myStatus: string | null = players.find((p: any) => p.id === user.id)?.status ?? null;
+  const iPlayed = isCompleted && myStatus === 'ACTIVE';
 
   const teamA = activePlayers.filter((p: any) => p.team === 'A');
   const teamB = activePlayers.filter((p: any) => p.team === 'B');
@@ -404,11 +407,12 @@ export default function MatchDetailsScreen({ route, navigation }: any) {
   const teamsDivided = teamA.length > 0 || teamB.length > 0;
 
   const renderPlayerCard = (player: any, idx: number, badgeText: string, badgeStyle: any, textStyle: any) => {
-    const isCompleted = matchStatus === 'COMPLETED';
-    const Wrapper: any = isCompleted ? TouchableOpacity : View;
-    
+    // Puanlama: maç bitti, ben oynadım, o da oynadı ve kendim değilim.
+    const canRate = iPlayed && player.status === 'ACTIVE' && player.id !== user.id;
+    const Wrapper: any = canRate ? TouchableOpacity : View;
+
     return (
-      <Wrapper key={idx} style={styles.playerCard} onPress={isCompleted ? () => openRatingModal(player) : undefined}>
+      <Wrapper key={player.id ?? idx} style={styles.playerCard} onPress={canRate ? () => openRatingModal(player) : undefined}>
         <View style={styles.playerLeft}>
           <View style={styles.playerAvatar}>
             {player.avatar ? (
@@ -423,9 +427,9 @@ export default function MatchDetailsScreen({ route, navigation }: any) {
             {player.goals > 0 && <Text style={{color: '#00E676', fontSize: 12, marginTop: 3, fontWeight: 'bold'}}>⚽ {player.goals} Gol</Text>}
           </View>
         </View>
-        <View style={[styles.statusBadge, isCompleted ? {backgroundColor: 'rgba(255, 193, 7, 0.2)'} : badgeStyle]}>
-          <Text style={[styles.statusText, isCompleted ? {color: '#FFC107'} : textStyle]}>
-            {isCompleted ? (player.id === user.id ? 'Sen' : 'Puanla ⭐') : String(badgeText)}
+        <View style={[styles.statusBadge, canRate ? {backgroundColor: 'rgba(255, 193, 7, 0.2)'} : badgeStyle]}>
+          <Text style={[styles.statusText, canRate ? {color: '#FFC107'} : textStyle]}>
+            {canRate ? 'Puanla ⭐' : isCompleted && player.id === user.id ? 'Sen' : String(badgeText)}
           </Text>
         </View>
       </Wrapper>
@@ -500,7 +504,11 @@ export default function MatchDetailsScreen({ route, navigation }: any) {
           {matchStatus === 'COMPLETED' && (matchScore || matchInfo.score) ? (
              <View style={{marginTop: 15, padding: 15, backgroundColor: 'rgba(255, 193, 7, 0.1)', borderRadius: 12, alignItems: 'center', borderWidth: 1, borderColor: 'rgba(255, 193, 7, 0.3)'}}>
                 <Text style={{color: '#FFC107', fontSize: 13, fontWeight: 'bold', marginBottom: 5}}>MAÇ SONUCU</Text>
-                <Text style={{color: '#FFF', fontSize: 24, fontWeight: '900', letterSpacing: 2}}>{matchInfo.teamAName || 'A Takımı'}  {matchScore || matchInfo.score}  {matchInfo.teamBName || 'B Takımı'}</Text>
+                <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'center', width: '100%' }}>
+                  <Text style={{ color: '#60A5FA', fontSize: 14, fontWeight: 'bold', flex: 1, textAlign: 'right' }} numberOfLines={1}>{matchInfo.teamAName || 'A Takımı'}</Text>
+                  <Text style={{ color: '#FFF', fontSize: 30, fontWeight: '900', marginHorizontal: 14 }}>{String(matchScore || matchInfo.score).replace(/\s*-\s*/, ' - ')}</Text>
+                  <Text style={{ color: '#F87171', fontSize: 14, fontWeight: 'bold', flex: 1, textAlign: 'left' }} numberOfLines={1}>{matchInfo.teamBName || 'B Takımı'}</Text>
+                </View>
              </View>
           ) : null}
 
@@ -519,8 +527,33 @@ export default function MatchDetailsScreen({ route, navigation }: any) {
           </TouchableOpacity>
         ) : null}
 
+        {isCompleted && (
+          <View style={styles.mvpCard}>
+            <Text style={styles.mvpLabel}>🏆 MAÇIN YILDIZI</Text>
+            {matchMvp ? (
+              <Text style={styles.mvpName}>{String(matchMvp.name)} <Text style={styles.mvpVotes}>· {String(matchMvp.voteCount)} oy</Text></Text>
+            ) : (
+              <Text style={styles.mvpEmpty}>Henüz kimse oy vermedi.</Text>
+            )}
+            {iPlayed ? (
+              <>
+                <TouchableOpacity style={styles.mvpBtn} onPress={() => setMvpModalVisible(true)} activeOpacity={0.85}>
+                  <Text style={styles.mvpBtnText}>MVP'ye oy ver</Text>
+                </TouchableOpacity>
+                <Text style={styles.mvpHint}>Takım arkadaşlarını puanlamak için aşağıda isimlerine dokun.</Text>
+              </>
+            ) : (
+              <Text style={styles.mvpHint}>Oy ve puanı sadece bu maçta oynayanlar verebilir.</Text>
+            )}
+          </View>
+        )}
+
         <View style={styles.sectionHeader}>
-          <Text style={styles.sectionTitle}>Kadro ({String(activePlayers.length)}/{String(matchInfo.maxPlayers || 14)})</Text>
+          <Text style={styles.sectionTitle}>
+            {isCompleted
+              ? `Oynayanlar (${activePlayers.length})`
+              : `Kadro (${activePlayers.length}/${matchInfo.maxPlayers || 14})`}
+          </Text>
           {matchStatus === 'OPEN' && isManager && (
             <TouchableOpacity onPress={handleDivideTeams} style={styles.divideButton}>
               <Text style={styles.divideButtonText}>Takım Böl 🎲</Text>
@@ -529,7 +562,7 @@ export default function MatchDetailsScreen({ route, navigation }: any) {
         </View>
 
         {/* Kim geliyor? Tek bakışta özet */}
-        <View style={styles.tallyRow}>
+        {!isCompleted && <View style={styles.tallyRow}>
           <View style={[styles.tallyChip, { borderColor: 'rgba(0, 230, 118, 0.4)' }]}>
             <Text style={[styles.tallyNum, { color: '#00E676' }]}>{activePlayers.length + reserves.length}</Text>
             <Text style={styles.tallyLabel}>Varım</Text>
@@ -546,7 +579,7 @@ export default function MatchDetailsScreen({ route, navigation }: any) {
             <Text style={[styles.tallyNum, { color: '#94A3B8' }]}>{pendingPlayers.length}</Text>
             <Text style={styles.tallyLabel}>Cevap yok</Text>
           </View>
-        </View>
+        </View>}
 
         {!teamsDivided ? (
           <View style={styles.playersContainer}>
@@ -694,9 +727,9 @@ export default function MatchDetailsScreen({ route, navigation }: any) {
             <View style={{maxHeight: 200, marginBottom: 20}}>
                <ScrollView nestedScrollEnabled showsVerticalScrollIndicator={false}>
                   <Text style={{color: '#94A3B8', fontSize: 13, marginBottom: 10}}>Golcüler:</Text>
-                  {players.map((p: any) => (
+                  {activePlayers.map((p: any) => (
                      <View key={p.id} style={{flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10, backgroundColor: 'rgba(255,255,255,0.05)', padding: 10, borderRadius: 10}}>
-                        <Text style={{color: '#FFF', flex: 1}} numberOfLines={1}>{p.name} ({p.team ? p.team + ' Takımı' : 'Yedek'})</Text>
+                        <Text style={{color: '#FFF', flex: 1}} numberOfLines={1}>{p.name}{p.team === 'A' || p.team === 'B' ? ` (${p.team} Takımı)` : ''}</Text>
                         <View style={{flexDirection: 'row', alignItems: 'center'}}>
                            <TouchableOpacity style={{backgroundColor: '#334155', width: 28, height: 28, borderRadius: 14, alignItems: 'center', justifyContent: 'center'}} onPress={() => setPlayerGoals(prev => ({...prev, [p.id]: Math.max(0, (prev[p.id] || 0) - 1)}))}>
                               <Text style={{color: '#FFF', fontWeight: 'bold'}}>-</Text>
@@ -796,9 +829,9 @@ export default function MatchDetailsScreen({ route, navigation }: any) {
       <Modal visible={suggestedTeamsModalVisible} transparent animationType="slide">
         <View style={styles.modalOverlay}>
           <View style={[styles.modalContent, { maxHeight: '90%', borderTopColor: '#00E676', borderTopWidth: 2 }]}>
-            <Text style={[styles.modalTitle, { color: '#00E676', fontSize: 18, marginBottom: 5 }]}>🤖 Yapay Zeka Dengeli Takım Önerisi</Text>
+            <Text style={[styles.modalTitle, { color: '#00E676', fontSize: 18, marginBottom: 5 }]}>⚖️ Dengeli Takım Önerisi</Text>
             <Text style={{ color: '#94A3B8', textAlign: 'center', fontSize: 12, marginBottom: 15 }}>
-              Oyuncuların güç puanları ve mevkileri analiz edilerek en adil dağılım yapılmıştır.
+              Oyuncuların puanları ve mevkileri dikkate alınarak iki takımın gücü eşitlendi.
             </Text>
 
             {suggestedStats && (
@@ -915,6 +948,14 @@ const styles = StyleSheet.create({
   statusText: { fontSize: 12, fontWeight: "bold" },
   statusTextApproved: { color: "#00E676" },
   statusTextPending: { color: "#F59E0B" },
+  mvpCard: { backgroundColor: 'rgba(255, 215, 0, 0.08)', borderRadius: 16, padding: 16, marginBottom: 20, borderWidth: 1, borderColor: 'rgba(255, 215, 0, 0.3)', alignItems: 'center' },
+  mvpLabel: { color: '#FFD700', fontSize: 12, fontWeight: 'bold', letterSpacing: 1 },
+  mvpName: { color: '#FFFFFF', fontSize: 20, fontWeight: '900', marginTop: 6 },
+  mvpVotes: { color: '#FFD700', fontSize: 14, fontWeight: '600' },
+  mvpEmpty: { color: '#94A3B8', fontSize: 14, marginTop: 6 },
+  mvpBtn: { backgroundColor: '#FFD700', borderRadius: 12, paddingVertical: 12, paddingHorizontal: 24, marginTop: 12 },
+  mvpBtnText: { color: '#0F172A', fontWeight: 'bold', fontSize: 15 },
+  mvpHint: { color: '#94A3B8', fontSize: 12, marginTop: 10, textAlign: 'center' },
   locationCard: { flexDirection: "row", alignItems: "center", backgroundColor: "#1E293B", borderRadius: 16, padding: 16, marginBottom: 20, borderWidth: 1, borderColor: "rgba(0, 230, 118, 0.2)" },
   locationName: { color: "#FFFFFF", fontSize: 16, fontWeight: "bold" },
   locationSub: { color: "#94A3B8", fontSize: 13, marginTop: 2 },

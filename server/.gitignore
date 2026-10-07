@@ -23,3 +23,7 @@ sporarea.db
 # TypeScript build outputs
 *.d.ts
 *.d.ts.map
+
+# Web sürümü derlenmiş dosyaları (npm run build:web) repoda tutulur; Render bunları sunar.
+!public/
+!public/**

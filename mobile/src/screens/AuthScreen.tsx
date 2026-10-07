@@ -90,13 +90,24 @@ export default function AuthScreen({ navigation }: any) {
   }, []);
 
   const handleAuth = async () => {
+    const problem = !email.trim() || !password
+      ? 'E-posta ve şifre gerekli.'
+      : !isLogin && !fullName.trim()
+        ? 'Adını yaz, gruptakiler seni tanısın.'
+        : !isLogin && password.length < 6
+          ? 'Şifre en az 6 karakter olmalı.'
+          : null;
+    if (problem) {
+      Alert.alert('Eksik bilgi', problem);
+      return;
+    }
     try {
       setLoading(true);
       const endpoint = isLogin ? `${API_URL}/login` : `${API_URL}/register`;
       
       const payload = isLogin 
-        ? { email, password } 
-        : { name: fullName, email, password };
+        ? { email: email.trim(), password }
+        : { name: fullName.trim(), email: email.trim(), password };
 
       const response = await apiFetch(endpoint, {
         method: 'POST',
@@ -170,6 +181,20 @@ export default function AuthScreen({ navigation }: any) {
               { opacity: fadeAnim, transform: [{ translateY: slideAnim }] }
             ]}
           >
+            {!isLogin && (
+               <View style={[styles.inputContainer, focusedInput === 'name' && styles.inputFocused]}>
+               <Ionicons name="person-outline" size={20} color={focusedInput === 'name' ? '#00E676' : '#A0A0A0'} style={styles.inputIcon} />
+               <TextInput
+                 style={styles.input}
+                 placeholder="Ad Soyad"
+                 placeholderTextColor="#A0A0A0"
+                 value={fullName}
+                 onChangeText={setFullName}
+                 onFocus={() => setFocusedInput('name')}
+                 onBlur={() => setFocusedInput(null)}
+               />
+             </View>
+            )}
             <View style={[styles.inputContainer, focusedInput === 'email' && styles.inputFocused]}>
               <Ionicons name="mail-outline" size={20} color={focusedInput === 'email' ? '#00E676' : '#A0A0A0'} style={styles.inputIcon} />
               <TextInput
@@ -189,7 +214,7 @@ export default function AuthScreen({ navigation }: any) {
               <Ionicons name="lock-closed-outline" size={20} color={focusedInput === 'password' ? '#00E676' : '#A0A0A0'} style={styles.inputIcon} />
               <TextInput
                 style={styles.input}
-                placeholder="Şifre"
+                placeholder={isLogin ? "Şifre" : "Şifre (en az 6 karakter)"}
                 placeholderTextColor="#A0A0A0"
                 value={password}
                 onChangeText={setPassword}
@@ -199,20 +224,6 @@ export default function AuthScreen({ navigation }: any) {
               />
             </View>
 
-            {!isLogin && (
-               <View style={[styles.inputContainer, focusedInput === 'name' && styles.inputFocused]}>
-               <Ionicons name="person-outline" size={20} color={focusedInput === 'name' ? '#00E676' : '#A0A0A0'} style={styles.inputIcon} />
-               <TextInput
-                 style={styles.input}
-                 placeholder="Ad Soyad"
-                 placeholderTextColor="#A0A0A0"
-                 value={fullName}
-                 onChangeText={setFullName}
-                 onFocus={() => setFocusedInput('name')}
-                 onBlur={() => setFocusedInput(null)}
-               />
-             </View>
-            )}
 
             <View style={{ height: 16 }} />
 

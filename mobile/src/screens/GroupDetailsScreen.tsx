@@ -171,7 +171,8 @@ export default function GroupDetailsScreen({ route, navigation }: any) {
       `⚽ ${group.name} grubuna katıl!`,
       weekly ? `${weekly} · ${group.weeklyLocation}` : null,
       '',
-      `SporArea'da "Kodla Katıl"a bas ve şu kodu yaz: ${group.inviteCode}`,
+      `1) Aç: https://sportarea.onrender.com (iPhone'da da çalışır, indirme gerekmez)`,
+      `2) Kayıt ol, "Kodla Katıl"a bas ve şu kodu yaz: ${group.inviteCode}`,
     ].filter((x) => x !== null);
     try {
       await Share.share({ message: lines.join('\n') });

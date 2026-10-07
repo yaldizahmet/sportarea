@@ -33,6 +33,14 @@
           "color": "#00E676"
         }
       ]
-    ]
+    ],
+    "web": {
+      "favicon": "./assets/favicon.png",
+      "name": "SporArea",
+      "shortName": "SporArea",
+      "themeColor": "#0F172A",
+      "backgroundColor": "#0F172A",
+      "lang": "tr"
+    }
   }
 }

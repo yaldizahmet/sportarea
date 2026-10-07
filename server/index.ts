@@ -3,6 +3,8 @@ import express from 'express';
 import cors from 'cors';
 import { db, tx, initDB } from './db';
 import { randomUUID } from 'node:crypto';
+import path from 'node:path';
+import fs from 'node:fs';
 import jwt from 'jsonwebtoken';
 import bcrypt from 'bcryptjs';
 import rateLimit from 'express-rate-limit';
@@ -204,14 +206,26 @@ async function ensureUpcomingMatchesForUser(userId: string) {
 
 const isUniqueViolation = (err: any) => err && err.code === '23505';
 
-app.get('/', (req, res) => {
-  res.send('SporArea API Çalışıyor!');
+// Uygulamanın web sürümü (iPhone'u olanlar ve uygulamayı indirmek istemeyenler için).
+// mobile klasöründen `npm run build:web` ile server/public içine üretilir.
+const WEB_DIR = path.join(__dirname, 'public');
+const hasWeb = fs.existsSync(path.join(WEB_DIR, 'index.html'));
+if (hasWeb) {
+  app.use(express.static(WEB_DIR, { index: 'index.html', maxAge: '1h' }));
+} else {
+  app.get('/', (req, res) => {
+    res.send('SporArea API Çalışıyor!');
+  });
+}
+
+app.get('/api/health', (req, res) => {
+  res.json({ ok: true });
 });
 
 // Authentication Middleware
 const authenticateToken = (req: any, res: any, next: any) => {
   // /cron/tick kendi gizli anahtarıyla korunuyor (aşağıda).
-  if (req.path === '/login' || req.path === '/register' || req.path === '/me' || req.path === '/cron/tick') {
+  if (req.path === '/login' || req.path === '/register' || req.path === '/me' || req.path === '/cron/tick' || req.path === '/health') {
     return next();
   }
   const token = req.headers.authorization?.split(' ')[1];
@@ -231,8 +245,14 @@ app.post('/api/register', authLimiter, async (req, res) => {
   try {
     const { name, password } = req.body;
     const email = String(req.body.email ?? '').trim();
-    if (!name || !email || !password) {
+    if (!String(name ?? '').trim() || !email || !password) {
       return res.status(400).json({ error: 'Lütfen tüm alanları doldurun.' });
+    }
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      return res.status(400).json({ error: 'Geçerli bir e-posta adresi girin.' });
+    }
+    if (String(password).length < 6) {
+      return res.status(400).json({ error: 'Şifre en az 6 karakter olmalı.' });
     }
 
     const existing = await db.get('SELECT id FROM "User" WHERE lower(email) = lower(?)', [email]);
@@ -242,9 +262,10 @@ app.post('/api/register', authLimiter, async (req, res) => {
 
     const id = randomUUID();
     const hashedPassword = await bcrypt.hash(password, BCRYPT_SALT_ROUNDS);
-    await db.run('INSERT INTO "User" (id, name, email, password, role) VALUES (?, ?, ?, ?, ?)', [id, name, email, hashedPassword, 'PLAYER']);
+    const cleanName = String(name).trim().slice(0, 40);
+    await db.run('INSERT INTO "User" (id, name, email, password, role) VALUES (?, ?, ?, ?, ?)', [id, cleanName, email, hashedPassword, 'PLAYER']);
 
-    const user = { id, name, email, role: 'PLAYER' };
+    const user = { id, name: cleanName, email, role: 'PLAYER' };
     const token = jwt.sign({ id }, JWT_SECRET, { expiresIn: '30d' });
 
     res.json({ message: 'Kayıt başarılı!', user, token });
@@ -581,7 +602,17 @@ app.get('/api/leaderboard/groups', async (req, res) => {
 // NOTIFICATIONS API
 app.get('/api/notifications', async (req, res) => {
   try {
-    const notifications = await db.all('SELECT * FROM "Notifications" WHERE "userId" = ? ORDER BY "createdAt" DESC LIMIT 20', [req.user.id]);
+    // Artık cevap verilemeyecek davetleri (maç geçti, bitti ya da silindi) gösterme.
+    const notifications = await db.all(`
+      SELECT n.* FROM "Notifications" n
+      WHERE n."userId" = ?
+        AND NOT (
+          n.type = 'MATCH_INVITE' AND NOT EXISTS (
+            SELECT 1 FROM "Matches" m
+            WHERE m.id = n.metadata::jsonb ->> 'matchId' AND m.status = 'OPEN' AND m."matchTimestamp" > ?
+          )
+        )
+      ORDER BY n."createdAt" DESC LIMIT 30`, [req.user.id, Date.now()]);
     res.json(notifications);
   } catch (error) {
     res.status(500).json({ error: 'Bildirimler getirilemedi' });
@@ -1167,6 +1198,21 @@ app.post('/api/matches/:id/finish', async (req, res) => {
   }
 });
 
+// Maç sonrası (MVP, puanlama): maç bitmiş olmalı, hem oy veren hem oy alan o maçta sahada (ACTIVE) olmalı.
+async function postMatchCheck(matchId: string, fromId: string, toId: string): Promise<string | null> {
+  const match = await db.get('SELECT status FROM "Matches" WHERE id = ?', [matchId]);
+  if (!match) return 'Maç bulunamadı.';
+  if (match.status !== 'COMPLETED') return 'Bu işlem maç bittikten sonra yapılabilir.';
+  const rows = await db.all(
+    `SELECT "userId" FROM "MatchPlayers" WHERE "matchId" = ? AND status = 'ACTIVE' AND "userId" = ANY(?)`,
+    [matchId, [fromId, toId]]
+  );
+  const played = new Set(rows.map((r: any) => r.userId));
+  if (!played.has(fromId)) return 'Sadece bu maçta oynayanlar oy verebilir.';
+  if (!played.has(toId)) return 'Seçtiğin kişi bu maçta oynamadı.';
+  return null;
+}
+
 // MVP API
 app.get('/api/matches/:id/mvp', async (req, res) => {
   try {
@@ -1191,6 +1237,9 @@ app.post('/api/matches/:id/mvp', async (req, res) => {
     const voterId = req.user.id; // oy veren her zaman giriş yapan kişi
 
     if (!votedId) return res.status(400).json({ error: 'Oy verilecek oyuncu seçilmedi.' });
+    if (votedId === voterId) return res.status(400).json({ error: 'Kendine oy veremezsin.' });
+    const problem = await postMatchCheck(id, voterId, String(votedId));
+    if (problem) return res.status(403).json({ error: problem });
 
     await db.run('INSERT INTO "MvpVotes" (id, "matchId", "voterId", "votedId") VALUES (?, ?, ?, ?)', [randomUUID(), id, voterId, votedId]);
     res.json({ message: 'MVP oyunuz kaydedildi!' });
@@ -1209,6 +1258,12 @@ app.post('/api/matches/:id/rate', async (req, res) => {
     const raterId = req.user.id; // puanlayan her zaman giriş yapan kişi
 
     if (raterId === ratedId) return res.status(400).json({ error: 'Kendinizi puanlayamazsınız.' });
+    const scores = [speed, shoot, pass, physique].map(Number);
+    if (scores.some((x) => !Number.isInteger(x) || x < 1 || x > 99)) {
+      return res.status(400).json({ error: 'Puanlar 1 ile 99 arasında olmalı.' });
+    }
+    const problem = await postMatchCheck(id, raterId, String(ratedId));
+    if (problem) return res.status(403).json({ error: problem });
 
     // Aynı oyuncuyu aynı maçta tekrar puanlarsa eski puan güncellenir.
     await db.run(`
@@ -1290,6 +1345,17 @@ app.get('/api/users/:id/stats', async (req, res) => {
     res.status(500).json({ error: 'İstatistikler getirilemedi.' });
   }
 });
+
+// Bilinmeyen /api adresleri JSON 404 dönsün; diğer her adres web uygulamasını açsın.
+app.use('/api', (req, res) => {
+  res.status(404).json({ error: 'Bulunamadı.' });
+});
+if (hasWeb) {
+  app.use((req, res, next) => {
+    if (req.method !== 'GET') return next();
+    res.sendFile(path.join(WEB_DIR, 'index.html'));
+  });
+}
 
 const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
 
