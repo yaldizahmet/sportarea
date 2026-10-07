@@ -19,6 +19,15 @@ import { Ionicons } from "@expo/vector-icons";
 import { StatusBar } from "expo-status-bar";
 import { API_URL } from "../config/api";
 
+// Maç kartında "benim cevabım" rozeti
+const MY_STATUS_BADGE: Record<string, { label: string; color: string; bg: string; border: string }> = {
+  ACTIVE:   { label: 'Varım',     color: '#00E676', bg: 'rgba(0, 230, 118, 0.15)',  border: 'rgba(0, 230, 118, 0.4)' },
+  RESERVE:  { label: 'Yedek',     color: '#38BDF8', bg: 'rgba(56, 189, 248, 0.15)', border: 'rgba(56, 189, 248, 0.4)' },
+  MAYBE:    { label: 'Belki',     color: '#FFC107', bg: 'rgba(255, 193, 7, 0.15)',  border: 'rgba(255, 193, 7, 0.4)' },
+  DECLINED: { label: 'Yokum',     color: '#F44336', bg: 'rgba(244, 67, 54, 0.12)',  border: 'rgba(244, 67, 54, 0.35)' },
+  NONE:     { label: 'Cevap ver', color: '#0F172A', bg: '#FFC107',                  border: '#FFC107' },
+};
+
 export default function DashboardScreen({ route, navigation }: any) {
   const user = route.params?.user || { name: "Oyuncu", id: "tempId" };
 
@@ -277,34 +286,27 @@ export default function DashboardScreen({ route, navigation }: any) {
     }
   };
 
-  const handleAcceptMatchInvite = async (n: any) => {
+  // Davet bildiriminden doğrudan Varım / Belki / Yokum. Sunucu cevap gelince daveti kendisi siler.
+  const answerMatchInvite = async (n: any, response: 'YES' | 'MAYBE' | 'NO') => {
     try {
-      if(n.metadata) {
-         const meta = JSON.parse(n.metadata);
-         const res = await apiFetch(`${API_URL}/matches/${meta.matchId}/join`, {
-           method: "POST",
-           headers: { "Content-Type": "application/json" },
-           body: JSON.stringify({ })
-         });
-         const data = await res.json();
-         
-         if (res.ok) {
-           await apiFetch(`${API_URL}/notifications/${n.id}`, { method: "DELETE" });
-           setNotifications(prev => prev.filter(x => x.id !== n.id));
-           Alert.alert("Başarılı", data.message || "Maça katıldınız!");
-           fetchData();
-         } else {
-           Alert.alert("İşlem Başarısız", data.error || "Maça katılım süresi dolmuş olabilir.");
-         }
+      const meta = n.metadata ? JSON.parse(n.metadata) : null;
+      if (!meta?.matchId) return;
+      const res = await apiFetch(`${API_URL}/matches/${meta.matchId}/respond`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ response })
+      });
+      const data = await res.json();
+      if (res.ok) {
+        setNotifications(prev => prev.filter(x => x.id !== n.id));
+        if (data.myStatus === 'RESERVE') Alert.alert("Yedektesin", data.message);
+        fetchData();
+      } else {
+        Alert.alert("Olmadı", data.error || "Cevabın kaydedilemedi.");
       }
-    } catch(e) {}
-  };
-
-  const handleRejectMatchInvite = async (n: any) => {
-    try {
-      await apiFetch(`${API_URL}/notifications/${n.id}`, { method: "DELETE" });
-      setNotifications(prev => prev.filter(x => x.id !== n.id));
-    } catch(e) {}
+    } catch (e) {
+      Alert.alert("Hata", "Bağlantı sorunu yaşandı.");
+    }
   };
 
   const currentMatches = matchTab === 'my' ? myMatches : publicMatches;
@@ -421,19 +423,22 @@ export default function DashboardScreen({ route, navigation }: any) {
                   <Text style={styles.rowTitle} numberOfLines={1}>
                     {match.location || 'Konum Belirtilmemiş'}
                   </Text>
-                  <Text style={styles.rowSubtitle}>
-                    {match.date || 'Tarih Belirtilmemiş'}
+                  <Text style={styles.rowSubtitle} numberOfLines={1}>
+                    {match.date || 'Tarih Belirtilmemiş'}{match.groupName ? ` · ${match.groupName}` : ''}
                   </Text>
                 </View>
 
                 <View style={styles.rowRightSection}>
-                  {match.groupName && (
-                    <View style={[styles.miniBadge, { backgroundColor: 'rgba(168, 85, 247, 0.15)', borderColor: 'rgba(168, 85, 247, 0.3)' }]}>
-                      <Text style={[styles.miniBadgeText, { color: '#A855F7' }]}>{match.groupName}</Text>
-                    </View>
-                  )}
+                  {(() => {
+                    const s = MY_STATUS_BADGE[match.myStatus ?? 'NONE'] ?? MY_STATUS_BADGE.NONE;
+                    return (
+                      <View style={[styles.miniBadge, { backgroundColor: s.bg, borderColor: s.border }]}>
+                        <Text style={[styles.miniBadgeText, { color: s.color, fontWeight: 'bold' }]}>{s.label}</Text>
+                      </View>
+                    );
+                  })()}
                   <View style={[styles.miniBadge, { backgroundColor: 'rgba(255, 255, 255, 0.05)', borderColor: 'rgba(255, 255, 255, 0.1)' }]}>
-                    <Text style={[styles.miniBadgeText, { color: '#94A3B8' }]}>{match.maxPlayers} Kişi</Text>
+                    <Text style={[styles.miniBadgeText, { color: '#94A3B8' }]}>{match.activeCount ?? 0}/{match.maxPlayers}</Text>
                   </View>
                   <Ionicons name="chevron-forward" size={16} color="#64748B" style={{ marginLeft: 8 }} />
                 </View>
@@ -1219,12 +1224,15 @@ export default function DashboardScreen({ route, navigation }: any) {
                         <Text style={{color: '#FFF', fontSize: 14, lineHeight: 20}}>{n.message}</Text>
                         
                         {n.type === 'MATCH_INVITE' && (
-                          <View style={{flexDirection: 'row', marginTop: 15, justifyContent: 'space-between'}}>
-                             <TouchableOpacity style={{flex: 0.48, backgroundColor: 'rgba(244, 67, 54, 0.1)', paddingVertical: 10, borderRadius: 8, alignItems: 'center', borderWidth: 1, borderColor: 'rgba(244, 67, 54, 0.3)'}} onPress={() => handleRejectMatchInvite(n)}>
-                               <Text style={{color: '#F44336', fontWeight: 'bold', fontSize: 13}}>Reddet</Text>
+                          <View style={{flexDirection: 'row', marginTop: 15, gap: 8}}>
+                             <TouchableOpacity style={{flex: 1, backgroundColor: '#00E676', paddingVertical: 10, borderRadius: 8, alignItems: 'center'}} onPress={() => answerMatchInvite(n, 'YES')}>
+                               <Text style={{color: '#000', fontWeight: 'bold', fontSize: 13}}>Varım</Text>
                              </TouchableOpacity>
-                             <TouchableOpacity style={{flex: 0.48, backgroundColor: '#00E676', paddingVertical: 10, borderRadius: 8, alignItems: 'center'}} onPress={() => handleAcceptMatchInvite(n)}>
-                               <Text style={{color: '#000', fontWeight: 'bold', fontSize: 13}}>Kabul Et</Text>
+                             <TouchableOpacity style={{flex: 1, backgroundColor: 'rgba(255, 193, 7, 0.12)', paddingVertical: 10, borderRadius: 8, alignItems: 'center', borderWidth: 1, borderColor: 'rgba(255, 193, 7, 0.4)'}} onPress={() => answerMatchInvite(n, 'MAYBE')}>
+                               <Text style={{color: '#FFC107', fontWeight: 'bold', fontSize: 13}}>Belki</Text>
+                             </TouchableOpacity>
+                             <TouchableOpacity style={{flex: 1, backgroundColor: 'rgba(244, 67, 54, 0.1)', paddingVertical: 10, borderRadius: 8, alignItems: 'center', borderWidth: 1, borderColor: 'rgba(244, 67, 54, 0.3)'}} onPress={() => answerMatchInvite(n, 'NO')}>
+                               <Text style={{color: '#F44336', fontWeight: 'bold', fontSize: 13}}>Yokum</Text>
                              </TouchableOpacity>
                           </View>
                         )}

@@ -152,3 +152,18 @@ begin
     execute format('create policy server_all on sportarea.%I for all to sportarea_app using (true) with check (true)', t);
   end loop;
 end $$;
+
+-- v2: Varım / Yokum / Belki
+-- "Varım" = MatchPlayers'ta kayıt (ACTIVE ya da RESERVE). Bu tablo sadece Yokum ve Belki cevaplarını tutar.
+-- Hiç kaydı olmayan grup üyesi = henüz cevap vermemiş.
+create table sportarea."MatchResponses" (
+  "matchId" text not null references sportarea."Matches"(id) on delete cascade,
+  "userId" text not null references sportarea."User"(id) on delete cascade,
+  response text not null check (response in ('NO', 'MAYBE')),
+  "updatedAt" timestamptz not null default now(),
+  primary key ("matchId", "userId")
+);
+create index on sportarea."MatchResponses" ("userId");
+grant select, insert, update, delete on sportarea."MatchResponses" to sportarea_app;
+alter table sportarea."MatchResponses" enable row level security;
+create policy server_all on sportarea."MatchResponses" for all to sportarea_app using (true) with check (true);

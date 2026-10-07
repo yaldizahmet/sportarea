@@ -488,27 +488,40 @@ app.delete('/api/notifications/:id', async (req, res) => {
 });
 
 // MATCHES API
+// Her maç kartı için: giriş yapan kişinin cevabı (myStatus) ve kadrodaki kişi sayısı.
+// myStatus: ACTIVE (varım), RESERVE (varım, yedekte), MAYBE (belki), DECLINED (yokum), null (cevap yok)
+const MATCH_LIST_EXTRAS = `
+  COALESCE(
+    (SELECT mp.status FROM "MatchPlayers" mp WHERE mp."matchId" = m.id AND mp."userId" = ?),
+    (SELECT CASE r.response WHEN 'NO' THEN 'DECLINED' ELSE 'MAYBE' END
+       FROM "MatchResponses" r WHERE r."matchId" = m.id AND r."userId" = ?)
+  ) AS "myStatus",
+  (SELECT COUNT(*) FROM "MatchPlayers" mp WHERE mp."matchId" = m.id AND mp.status = 'ACTIVE') AS "activeCount"
+`;
+
 app.get('/api/matches', async (req, res) => {
   try {
     const userId = req.user.id;
     if (req.query.type === 'public') {
       const matches = await db.all(`
-        SELECT m.*, NULL AS "groupName"
+        SELECT m.*, NULL AS "groupName", ${MATCH_LIST_EXTRAS}
         FROM "Matches" m
         WHERE m."groupId" IS NULL
-      `);
+        ORDER BY m."matchTimestamp" ASC
+      `, [userId, userId]);
       return res.json(matches);
     }
 
     const onlyMine = req.query.type === 'my';
     const matches = await db.all(`
-      SELECT m.*, g.name AS "groupName"
+      SELECT m.*, g.name AS "groupName", ${MATCH_LIST_EXTRAS}
       FROM "Matches" m
       LEFT JOIN "Groups" g ON m."groupId" = g.id
       WHERE EXISTS (SELECT 1 FROM "MatchPlayers" mp WHERE mp."matchId" = m.id AND mp."userId" = ?)
          OR EXISTS (SELECT 1 FROM "GroupMembers" gm WHERE gm."groupId" = m."groupId" AND gm."userId" = ?)
          ${onlyMine ? '' : 'OR m."groupId" IS NULL'}
-    `, [userId, userId]);
+      ORDER BY m."matchTimestamp" ASC
+    `, [userId, userId, userId, userId]);
     res.json(matches);
   } catch (error) {
     res.status(500).json({ error: 'Maçlar getirilirken hata oluştu.' });
@@ -682,18 +695,17 @@ app.get('/api/matches/:id/players', async (req, res) => {
 
     const matchRow = await db.get('SELECT "groupId", "creatorId" FROM "Matches" WHERE id = ?', [id]);
     if (matchRow && matchRow.groupId) {
-      // Gruptaki, henüz katılmamış üyeler: daveti varsa PENDING, yoksa DECLINED.
+      // Gruptaki, "Varım" demeyen üyeler: verdikleri cevaba göre DECLINED (yokum), MAYBE (belki)
+      // ya da hiç cevap vermediyse PENDING.
       const others = await db.all(`
-        SELECT u.id, u.name, u.avatar, u.position,
-          EXISTS (
-            SELECT 1 FROM "Notifications" n
-            WHERE n."userId" = u.id AND n.type = 'MATCH_INVITE' AND n.metadata::jsonb ->> 'matchId' = ?
-          ) AS "hasInvite"
+        SELECT u.id, u.name, u.avatar, u.position, r.response
         FROM "GroupMembers" gm
         JOIN "User" u ON gm."userId" = u.id
-        WHERE gm."groupId" = ? AND u.id IS DISTINCT FROM ?
+        LEFT JOIN "MatchResponses" r ON r."matchId" = ? AND r."userId" = u.id
+        WHERE gm."groupId" = ?
           AND NOT EXISTS (SELECT 1 FROM "MatchPlayers" mp WHERE mp."matchId" = ? AND mp."userId" = u.id)
-      `, [id, matchRow.groupId, matchRow.creatorId, id]);
+        ORDER BY u.name
+      `, [id, matchRow.groupId, id]);
 
       for (const gm of others) {
         players.push({
@@ -703,7 +715,7 @@ app.get('/api/matches/:id/players', async (req, res) => {
           position: gm.position,
           team: 'NONE',
           goals: 0,
-          status: gm.hasInvite ? 'PENDING' : 'DECLINED'
+          status: gm.response === 'NO' ? 'DECLINED' : gm.response === 'MAYBE' ? 'MAYBE' : 'PENDING'
         });
       }
     }
@@ -714,70 +726,82 @@ app.get('/api/matches/:id/players', async (req, res) => {
   }
 });
 
-app.post('/api/matches/:id/join', async (req, res) => {
-  try {
-    const { id } = req.params;
-    const userId = req.user.id;
+// VARIM / YOKUM / BELKİ
+// Tek giriş noktası: oyuncunun bir maça cevabını değiştirir.
+//  YES   -> kadroya girer (yer yoksa yedeğe)
+//  NO    -> kadrodaysa çıkar (ilk yedek kadroya yükselir), "Yokum" olarak işaretlenir
+//  MAYBE -> kadrodaysa çıkar, "Belki" olarak işaretlenir
+type MatchAnswer = 'YES' | 'NO' | 'MAYBE';
+type RespondResult = { status: number; body: any };
 
-    const result = await tx(async (t) => {
-      // Aynı anda katılan iki kişi kontenjanı aşmasın diye maç satırını kilitliyoruz.
-      const matchRow = await t.get('SELECT "creatorId", location, "maxPlayers", "matchTimestamp", "lockoutHours" FROM "Matches" WHERE id = ? FOR UPDATE', [id]);
-      if (!matchRow) return { status: 404, body: { error: 'Maç bulunamadı' } };
+async function respondToMatch(matchId: string, userId: string, response: MatchAnswer): Promise<RespondResult> {
+  return tx(async (t) => {
+    // Aynı anda gelen cevaplar kontenjanı bozmasın diye maç satırını kilitliyoruz.
+    const matchRow = await t.get(
+      'SELECT "groupId", "creatorId", location, "maxPlayers", "matchTimestamp", "lockoutHours", status FROM "Matches" WHERE id = ? FOR UPDATE',
+      [matchId]
+    );
+    if (!matchRow) return { status: 404, body: { error: 'Maç bulunamadı' } };
+    if (matchRow.status === 'COMPLETED') return { status: 400, body: { error: 'Bu maç tamamlandı.' } };
 
-      if (isLockedOut(matchRow)) {
+    if (matchRow.groupId) {
+      const member = await t.get('SELECT 1 FROM "GroupMembers" WHERE "groupId" = ? AND "userId" = ?', [matchRow.groupId, userId]);
+      if (!member) return { status: 403, body: { error: 'Bu maç sadece grup üyelerine açık.' } };
+    }
+
+    const current = await t.get('SELECT status FROM "MatchPlayers" WHERE "matchId" = ? AND "userId" = ?', [matchId, userId]);
+    const locked = isLockedOut(matchRow);
+
+    // Cevap verildiyse, bu maç için bekleyen davet bildirimi artık gereksiz.
+    const clearInvite = () => t.run(
+      `DELETE FROM "Notifications" WHERE "userId" = ? AND type = 'MATCH_INVITE' AND metadata::jsonb ->> 'matchId' = ?`,
+      [userId, matchId]
+    );
+
+    if (response === 'YES') {
+      if (current) {
+        await clearInvite();
+        return { status: 200, body: { message: current.status === 'RESERVE' ? 'Zaten yedek listesindesin.' : 'Zaten kadrodasın.', myStatus: current.status } };
+      }
+      if (locked) {
         return { status: 403, body: { error: `Bu maç için değişiklik süresi dolmuştur (Maça son ${matchRow.lockoutHours} saat kala kilitlendi).` } };
       }
 
-      const already = await t.get('SELECT status FROM "MatchPlayers" WHERE "matchId" = ? AND "userId" = ?', [id, userId]);
-      if (already) {
-        return { status: 200, body: { message: already.status === 'RESERVE' ? 'Zaten yedek listesindesiniz.' : 'Zaten kadrodasınız.' } };
-      }
-
-      const activeCount = await t.get(`SELECT COUNT(*) as c FROM "MatchPlayers" WHERE "matchId" = ? AND status = 'ACTIVE'`, [id]);
+      const activeCount = await t.get(`SELECT COUNT(*) as c FROM "MatchPlayers" WHERE "matchId" = ? AND status = 'ACTIVE'`, [matchId]);
       const isReserve = activeCount.c >= matchRow.maxPlayers;
       const playerStatus = isReserve ? 'RESERVE' : 'ACTIVE';
 
-      await t.run('INSERT INTO "MatchPlayers" ("matchId", "userId", status) VALUES (?, ?, ?)', [id, userId, playerStatus]);
+      await t.run('INSERT INTO "MatchPlayers" ("matchId", "userId", status) VALUES (?, ?, ?)', [matchId, userId, playerStatus]);
+      await t.run('DELETE FROM "MatchResponses" WHERE "matchId" = ? AND "userId" = ?', [matchId, userId]);
+      await clearInvite();
 
       if (matchRow.creatorId && matchRow.creatorId !== userId) {
+        const who = await t.get('SELECT name FROM "User" WHERE id = ?', [userId]);
         await t.run('INSERT INTO "Notifications" (id, "userId", message, type) VALUES (?, ?, ?, ?)', [
           randomUUID(),
           matchRow.creatorId,
-          `Bir oyuncu ${matchRow.location} maçına ${isReserve ? 'yedek olarak ' : ''}katıldı!`,
+          `${who?.name || 'Bir oyuncu'} ${matchRow.location} maçına ${isReserve ? 'yedek olarak ' : ''}katıldı!`,
           'JOIN'
         ]);
       }
 
-      return { status: 200, body: { message: isReserve ? 'Kadro doluydu, yedeğe alındınız.' : 'Maça katılım başarılı!' } };
-    });
+      return {
+        status: 200,
+        body: { message: isReserve ? 'Kadro doluydu, yedeğe alındın.' : 'Maça katılım başarılı!', myStatus: playerStatus }
+      };
+    }
 
-    res.status(result.status).json(result.body);
-  } catch (error) {
-    res.status(500).json({ error: 'Maça katılırken hata oluştu.' });
-  }
-});
-
-app.post('/api/matches/:id/leave', async (req, res) => {
-  try {
-    const { id } = req.params;
-    const userId = req.user.id;
-
-    const result = await tx(async (t) => {
-      const matchRow = await t.get('SELECT "matchTimestamp", "lockoutHours", location FROM "Matches" WHERE id = ? FOR UPDATE', [id]);
-      if (!matchRow) return { status: 404, body: { error: 'Maç bulunamadı' } };
-
-      if (isLockedOut(matchRow)) {
+    // NO veya MAYBE
+    if (current) {
+      if (locked) {
         return { status: 403, body: { error: `İptal süresi doldu! Maça son ${matchRow.lockoutHours} saat kala kadrodan çıkış yapılamaz.` } };
       }
+      await t.run('DELETE FROM "MatchPlayers" WHERE "matchId" = ? AND "userId" = ?', [matchId, userId]);
 
-      const leavingPlayer = await t.get('SELECT status FROM "MatchPlayers" WHERE "matchId" = ? AND "userId" = ?', [id, userId]);
-      await t.run('DELETE FROM "MatchPlayers" WHERE "matchId" = ? AND "userId" = ?', [id, userId]);
-
-      if (leavingPlayer && leavingPlayer.status === 'ACTIVE') {
-        const firstReserve = await t.get(`SELECT "userId" FROM "MatchPlayers" WHERE "matchId" = ? AND status = 'RESERVE' ORDER BY "joinedAt" ASC LIMIT 1`, [id]);
+      if (current.status === 'ACTIVE') {
+        const firstReserve = await t.get(`SELECT "userId" FROM "MatchPlayers" WHERE "matchId" = ? AND status = 'RESERVE' ORDER BY "joinedAt" ASC LIMIT 1`, [matchId]);
         if (firstReserve) {
-          await t.run(`UPDATE "MatchPlayers" SET status = 'ACTIVE' WHERE "matchId" = ? AND "userId" = ?`, [id, firstReserve.userId]);
-
+          await t.run(`UPDATE "MatchPlayers" SET status = 'ACTIVE' WHERE "matchId" = ? AND "userId" = ?`, [matchId, firstReserve.userId]);
           await t.run('INSERT INTO "Notifications" (id, "userId", message, type) VALUES (?, ?, ?, ?)', [
             randomUUID(),
             firstReserve.userId,
@@ -786,10 +810,53 @@ app.post('/api/matches/:id/leave', async (req, res) => {
           ]);
         }
       }
+    }
 
-      return { status: 200, body: { message: 'Maçtan çıkıldı.' } };
-    });
+    await t.run(
+      `INSERT INTO "MatchResponses" ("matchId", "userId", response) VALUES (?, ?, ?)
+       ON CONFLICT ("matchId", "userId") DO UPDATE SET response = EXCLUDED.response, "updatedAt" = now()`,
+      [matchId, userId, response]
+    );
+    await clearInvite();
 
+    return {
+      status: 200,
+      body: {
+        message: response === 'NO' ? 'Bu hafta yoksun, not edildi.' : 'Belki olarak işaretlendin.',
+        myStatus: response === 'NO' ? 'DECLINED' : 'MAYBE'
+      }
+    };
+  });
+}
+
+app.post('/api/matches/:id/respond', async (req, res) => {
+  const response = String(req.body?.response ?? '').toUpperCase();
+  if (response !== 'YES' && response !== 'NO' && response !== 'MAYBE') {
+    return res.status(400).json({ error: 'Cevap YES, NO ya da MAYBE olmalı.' });
+  }
+  try {
+    const result = await respondToMatch(req.params.id, req.user.id, response);
+    res.status(result.status).json(result.body);
+  } catch (error) {
+    console.error('Respond error:', error);
+    res.status(500).json({ error: 'Cevabın kaydedilemedi.' });
+  }
+});
+
+// Eski uygulama sürümleriyle uyumluluk: katıl = Varım, çık = Yokum
+app.post('/api/matches/:id/join', async (req, res) => {
+  try {
+    const result = await respondToMatch(req.params.id, req.user.id, 'YES');
+    res.status(result.status).json(result.body);
+  } catch (error) {
+    res.status(500).json({ error: 'Maça katılırken hata oluştu.' });
+  }
+});
+
+app.post('/api/matches/:id/leave', async (req, res) => {
+  try {
+    const result = await respondToMatch(req.params.id, req.user.id, 'NO');
+    if (result.status === 200) result.body.message = 'Maçtan çıkıldı.';
     res.status(result.status).json(result.body);
   } catch (error) {
     res.status(500).json({ error: 'Maçtan çıkarken hata oluştu.' });

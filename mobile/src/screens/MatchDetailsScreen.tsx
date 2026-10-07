@@ -69,7 +69,6 @@ export default function MatchDetailsScreen({ route, navigation }: any) {
   const user = route.params?.user || {};
 
   const [players, setPlayers] = useState<any[]>([]);
-  const [isJoined, setIsJoined] = useState(false);
   const [loading, setLoading] = useState(false);
   
   const [matchStatus, setMatchStatus] = useState(matchInfo.status || 'OPEN');
@@ -262,8 +261,6 @@ export default function MatchDetailsScreen({ route, navigation }: any) {
       const data = await res.json();
       if (Array.isArray(data)) {
         setPlayers(data);
-        const userInMatch = data.some((p) => p.id === user.id);
-        setIsJoined(userInMatch);
       }
     } catch (e) {
       console.log("Oyuncular getirilemedi", e);
@@ -370,60 +367,52 @@ export default function MatchDetailsScreen({ route, navigation }: any) {
     }
   };
 
-  const leaveMatch = async () => {
+  // VARIM / BELKİ / YOKUM
+  const sendResponse = async (response: 'YES' | 'MAYBE' | 'NO') => {
     setLoading(true);
     try {
-      const res = await apiFetch(`${API_URL}/matches/${matchInfo.id}/leave`, {
+      const res = await apiFetch(`${API_URL}/matches/${matchInfo.id}/respond`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ }),
+        body: JSON.stringify({ response }),
       });
       const data = await res.json();
-      if(res.ok) {
-        setIsJoined(false);
-        fetchPlayers();
+      if (res.ok) {
+        await fetchPlayers();
+        // Yedeğe düşmek önemli bir bilgi, onu ayrıca söyleyelim; diğer durumlarda düğme rengi yeterli.
+        if (data.myStatus === 'RESERVE') Alert.alert("Yedektesin", data.message);
       } else {
-        Alert.alert("Başarısız", data.error || "Çıkış yapılamadı");
+        Alert.alert("Olmadı", data.error || "Cevabın kaydedilemedi.");
       }
     } catch (e) {
-      Alert.alert("Hata", "Bağlantı sorunu");
+      Alert.alert("Hata", "Bağlantı sorunu yaşandı.");
     }
     setLoading(false);
   };
 
-  const handleJoinLeave = async () => {
-    if (isJoined) {
+  const handleRespond = (response: 'YES' | 'MAYBE' | 'NO') => {
+    if (loading) return;
+    const inRoster = myStatus === 'ACTIVE' || myStatus === 'RESERVE';
+    if (response === 'YES' && inRoster) return;
+    if (response === 'MAYBE' && myStatus === 'MAYBE') return;
+    if (response === 'NO' && myStatus === 'DECLINED') return;
+
+    // Kadrodan çıkmak birinin yerini etkiler; emin olalım.
+    if (inRoster && response !== 'YES') {
+      const msg = myStatus === 'ACTIVE'
+        ? "Kadrodan çıkarsan yerin ilk yedeğe geçer. Emin misin?"
+        : "Yedek listesinden çıkmak istediğine emin misin?";
       if (Platform.OS === 'web') {
-        if (window.confirm("Maçtan çıkmak istediğine emin misin?")) {
-           await leaveMatch();
-        }
+        if (window.confirm(msg)) sendResponse(response);
       } else {
-        Alert.alert("Emin misin?", "Maçtan çıkmak istediğine emin misin?", [
-          { text: "İptal", style: "cancel" },
-          { text: "Çık", style: "destructive", onPress: leaveMatch }
+        Alert.alert("Emin misin?", msg, [
+          { text: "Vazgeç", style: "cancel" },
+          { text: "Evet", style: "destructive", onPress: () => sendResponse(response) }
         ]);
       }
-    } else {
-      setLoading(true);
-      try {
-        const res = await apiFetch(`${API_URL}/matches/${matchInfo.id}/join`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ }),
-        });
-        const data = await res.json();
-        if (res.ok) {
-          setIsJoined(true);
-          fetchPlayers();
-          Alert.alert("Harika!", data.message || "Maça katıldın!");
-        } else {
-          Alert.alert("Hata", data.error || "Katılım başarısız oldu.");
-        }
-      } catch (e) {
-        Alert.alert("Hata", "Sistem hatası yaşandı.");
-      }
-      setLoading(false);
+      return;
     }
+    sendResponse(response);
   };
 
   const handleCancelMatch = async () => {
@@ -504,8 +493,11 @@ export default function MatchDetailsScreen({ route, navigation }: any) {
 
   const activePlayers = players.filter((p: any) => p.status === 'ACTIVE');
   const reserves = players.filter((p: any) => p.status === 'RESERVE');
+  const maybePlayers = players.filter((p: any) => p.status === 'MAYBE');
   const pendingPlayers = players.filter((p: any) => p.status === 'PENDING');
   const declinedPlayers = players.filter((p: any) => p.status === 'DECLINED');
+  // Benim cevabım: ACTIVE / RESERVE (varım), MAYBE, DECLINED, PENDING ya da listede yoksam null
+  const myStatus: string | null = players.find((p: any) => p.id === user.id)?.status ?? null;
 
   const teamA = activePlayers.filter((p: any) => p.team === 'A');
   const teamB = activePlayers.filter((p: any) => p.team === 'B');
@@ -800,6 +792,26 @@ export default function MatchDetailsScreen({ route, navigation }: any) {
           )}
         </View>
 
+        {/* Kim geliyor? Tek bakışta özet */}
+        <View style={styles.tallyRow}>
+          <View style={[styles.tallyChip, { borderColor: 'rgba(0, 230, 118, 0.4)' }]}>
+            <Text style={[styles.tallyNum, { color: '#00E676' }]}>{activePlayers.length + reserves.length}</Text>
+            <Text style={styles.tallyLabel}>Varım</Text>
+          </View>
+          <View style={[styles.tallyChip, { borderColor: 'rgba(255, 193, 7, 0.4)' }]}>
+            <Text style={[styles.tallyNum, { color: '#FFC107' }]}>{maybePlayers.length}</Text>
+            <Text style={styles.tallyLabel}>Belki</Text>
+          </View>
+          <View style={[styles.tallyChip, { borderColor: 'rgba(244, 67, 54, 0.4)' }]}>
+            <Text style={[styles.tallyNum, { color: '#F44336' }]}>{declinedPlayers.length}</Text>
+            <Text style={styles.tallyLabel}>Yokum</Text>
+          </View>
+          <View style={[styles.tallyChip, { borderColor: 'rgba(148, 163, 184, 0.4)' }]}>
+            <Text style={[styles.tallyNum, { color: '#94A3B8' }]}>{pendingPlayers.length}</Text>
+            <Text style={styles.tallyLabel}>Cevap yok</Text>
+          </View>
+        </View>
+
         {!teamsDivided ? (
           <View style={styles.playersContainer}>
             {unassigned.length === 0 ? (
@@ -813,16 +825,22 @@ export default function MatchDetailsScreen({ route, navigation }: any) {
                   {reserves.map((player: any, idx: number) => renderPlayerCard(player, idx, "YEDEK", styles.statusPending, styles.statusTextPending))}
                </View>
             )}
+            {maybePlayers.length > 0 && (
+               <View style={{marginTop: 20}}>
+                  <Text style={[styles.sectionTitle, {fontSize: 14, marginBottom: 10, color: '#FFC107'}]}>Belki ({maybePlayers.length})</Text>
+                  {maybePlayers.map((player: any, idx: number) => renderPlayerCard(player, idx, "BELKİ", {backgroundColor: 'rgba(255,193,7,0.12)'}, {color: '#FFC107'}))}
+               </View>
+            )}
             {pendingPlayers.length > 0 && (
                <View style={{marginTop: 20}}>
-                  <Text style={[styles.sectionTitle, {fontSize: 14, marginBottom: 10, color: '#A0A0A0'}]}>Cevap Bekleyenler ({pendingPlayers.length})</Text>
+                  <Text style={[styles.sectionTitle, {fontSize: 14, marginBottom: 10, color: '#A0A0A0'}]}>Cevap Vermeyenler ({pendingPlayers.length})</Text>
                   {pendingPlayers.map((player: any, idx: number) => renderPlayerCard(player, idx, "BEKLİYOR", {backgroundColor: 'rgba(255,255,255,0.1)'}, {color: '#94A3B8'}))}
                </View>
             )}
             {declinedPlayers.length > 0 && (
                <View style={{marginTop: 20}}>
-                  <Text style={[styles.sectionTitle, {fontSize: 14, marginBottom: 10, color: '#F44336'}]}>Reddedenler ({declinedPlayers.length})</Text>
-                  {declinedPlayers.map((player: any, idx: number) => renderPlayerCard(player, idx, "İPTAL", {backgroundColor: 'rgba(244,67,54,0.1)'}, {color: '#F44336'}))}
+                  <Text style={[styles.sectionTitle, {fontSize: 14, marginBottom: 10, color: '#F44336'}]}>Gelmiyor ({declinedPlayers.length})</Text>
+                  {declinedPlayers.map((player: any, idx: number) => renderPlayerCard(player, idx, "YOK", {backgroundColor: 'rgba(244,67,54,0.1)'}, {color: '#F44336'}))}
                </View>
             )}
           </View>
@@ -852,11 +870,12 @@ export default function MatchDetailsScreen({ route, navigation }: any) {
               </View>
             ) : null}
 
-            {pendingPlayers.length > 0 || declinedPlayers.length > 0 ? (
+            {maybePlayers.length > 0 || pendingPlayers.length > 0 || declinedPlayers.length > 0 ? (
                <View style={[styles.teamContainer, {borderColor: 'rgba(255,255,255,0.05)'}]}>
                   <Text style={[styles.teamHeader, { color: '#A0A0A0' }]}>Grup Üyeleri Durumu</Text>
+                  {maybePlayers.map((player: any, idx: number) => renderPlayerCard(player, idx, "BELKİ", {backgroundColor: 'rgba(255,193,7,0.12)'}, {color: '#FFC107'}))}
                   {pendingPlayers.map((player: any, idx: number) => renderPlayerCard(player, idx, "BEKLİYOR", {backgroundColor: 'rgba(255,255,255,0.1)'}, {color: '#94A3B8'}))}
-                  {declinedPlayers.map((player: any, idx: number) => renderPlayerCard(player, idx, "REDDETTİ", {backgroundColor: 'rgba(244,67,54,0.1)'}, {color: '#F44336'}))}
+                  {declinedPlayers.map((player: any, idx: number) => renderPlayerCard(player, idx, "YOK", {backgroundColor: 'rgba(244,67,54,0.1)'}, {color: '#F44336'}))}
                </View>
             ) : null}
           </View>
@@ -887,21 +906,40 @@ export default function MatchDetailsScreen({ route, navigation }: any) {
             </View>
         </View>
 
-        <View style={{ height: 100 }} />
+        <View style={{ height: 150 }} />
       </ScrollView>
 
       {matchStatus === 'OPEN' && (
         <View style={styles.footer}>
-          <TouchableOpacity style={styles.actionBtn} activeOpacity={0.8} onPress={handleJoinLeave} disabled={loading}>
-            <LinearGradient
-              colors={isJoined ? ["#ef4444", "#dc2626"] : ["#00C853", "#B2FF59"]}
-              start={{ x: 0, y: 0 }}
-              end={{ x: 1, y: 0 }}
-              style={styles.actionBtnGradient}
-            >
-              <Text style={styles.actionBtnText}>{loading ? "BEKLEYİN..." : isJoined ? "MAÇTAN ÇIK" : "BEN DE VARIM (KATIL)"}</Text>
-            </LinearGradient>
-          </TouchableOpacity>
+          <Text style={styles.answerPrompt}>
+            {myStatus === 'ACTIVE' ? 'Kadrodasın ✅'
+              : myStatus === 'RESERVE' ? 'Yedek listesindesin, yer açılırsa kadroya geçersin'
+              : myStatus === 'MAYBE' ? 'Belki dedin, kesinleşince güncelle'
+              : myStatus === 'DECLINED' ? 'Bu maça gelmiyorsun'
+              : 'Bu maça geliyor musun?'}
+          </Text>
+          <View style={styles.answerRow}>
+            {([
+              { key: 'YES', label: 'Varım', icon: 'checkmark-circle', color: '#00E676', on: myStatus === 'ACTIVE' || myStatus === 'RESERVE' },
+              { key: 'MAYBE', label: 'Belki', icon: 'help-circle', color: '#FFC107', on: myStatus === 'MAYBE' },
+              { key: 'NO', label: 'Yokum', icon: 'close-circle', color: '#F44336', on: myStatus === 'DECLINED' },
+            ] as const).map((opt) => (
+              <TouchableOpacity
+                key={opt.key}
+                activeOpacity={0.8}
+                disabled={loading}
+                onPress={() => handleRespond(opt.key)}
+                style={[
+                  styles.answerBtn,
+                  { borderColor: opt.on ? opt.color : 'rgba(255,255,255,0.12)', backgroundColor: opt.on ? opt.color : 'rgba(255,255,255,0.04)' },
+                  loading && { opacity: 0.6 },
+                ]}
+              >
+                <Ionicons name={opt.icon} size={20} color={opt.on ? '#0F172A' : opt.color} />
+                <Text style={[styles.answerBtnText, { color: opt.on ? '#0F172A' : '#E2E8F0' }]}>{opt.label}</Text>
+              </TouchableOpacity>
+            ))}
+          </View>
         </View>
       )}
       
@@ -1166,10 +1204,15 @@ const styles = StyleSheet.create({
   statusText: { fontSize: 12, fontWeight: "bold" },
   statusTextApproved: { color: "#00E676" },
   statusTextPending: { color: "#F59E0B" },
-  footer: { position: "absolute", bottom: 0, left: 0, right: 0, padding: 20, backgroundColor: "#0F172A", borderTopWidth: 1, borderTopColor: "rgba(255,255,255,0.05)" },
-  actionBtn: { borderRadius: 16, overflow: "hidden" },
-  actionBtnGradient: { paddingVertical: 18, alignItems: "center" },
-  actionBtnText: { color: "#000000", fontSize: 18, fontWeight: "bold" },
+  footer: { position: "absolute", bottom: 0, left: 0, right: 0, paddingHorizontal: 20, paddingTop: 12, paddingBottom: 20, backgroundColor: "#0F172A", borderTopWidth: 1, borderTopColor: "rgba(255,255,255,0.08)" },
+  answerPrompt: { color: "#94A3B8", fontSize: 13, textAlign: "center", marginBottom: 10 },
+  answerRow: { flexDirection: "row", gap: 10 },
+  answerBtn: { flex: 1, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6, paddingVertical: 14, borderRadius: 14, borderWidth: 1.5 },
+  answerBtnText: { fontSize: 16, fontWeight: "bold" },
+  tallyRow: { flexDirection: "row", gap: 8, marginBottom: 14 },
+  tallyChip: { flex: 1, alignItems: "center", paddingVertical: 10, borderRadius: 12, borderWidth: 1, backgroundColor: "rgba(255,255,255,0.03)" },
+  tallyNum: { fontSize: 22, fontWeight: "900" },
+  tallyLabel: { color: "#94A3B8", fontSize: 11, marginTop: 2 },
   
   chatContainer: { backgroundColor: "rgba(255, 255, 255, 0.03)", borderRadius: 20, padding: 15, borderWidth: 1, borderColor: "rgba(255, 255, 255, 0.05)" },
   myMsg: { backgroundColor: 'rgba(0, 230, 118, 0.15)', padding: 10, borderRadius: 10, marginBottom: 10, alignSelf: 'flex-end', minWidth: '50%' },
