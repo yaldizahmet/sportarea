@@ -221,7 +221,8 @@ app.post('/api/groups', async (req, res) => {
           await t.run('INSERT INTO "Groups" (id, name, "inviteCode", "creatorId") VALUES (?, ?, ?, ?)', [groupId, name, inviteCode, creatorId]);
           await t.run('INSERT INTO "GroupMembers" ("groupId", "userId") VALUES (?, ?)', [groupId, creatorId]);
         });
-        return res.status(201).json({ message: 'Grup oluşturuldu', inviteCode });
+        // Mobil uygulama davet kodunu data.group.inviteCode'dan okuyor.
+        return res.status(201).json({ message: 'Grup oluşturuldu', inviteCode, group: { id: groupId, name, inviteCode } });
       } catch (err) {
         if (!isUniqueViolation(err)) throw err;
       }
