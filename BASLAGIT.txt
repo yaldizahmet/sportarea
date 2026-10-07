@@ -59,4 +59,5 @@ Telefonda Expo Go ile QR kodu tara; telefon ve PC ayni Wi-Fi’da olsun.
 
 mobile\.env icinde EXPO_PUBLIC_API_URL bilgisayarinin IPv4’u olmali (degistiyse ipconfig ile guncelle).
 
-server\.env icinde JWT_SECRET hazir olmali (yoksa sunucu acilmaz).
+server\.env icinde JWT_SECRET ve DATABASE_URL hazir olmali (yoksa sunucu acilmaz).
+Veritabani artik Supabase'te (Postgres, "sportarea" semasi). Sema: server\schema.sql

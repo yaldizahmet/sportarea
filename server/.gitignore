@@ -19,3 +19,7 @@ err*.txt
 # Dead database files
 dev.db
 sporarea.db
+
+# TypeScript build outputs
+*.d.ts
+*.d.ts.map
