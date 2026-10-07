@@ -20,6 +20,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { StatusBar } from 'expo-status-bar';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { API_URL } from '../config/api';
+import { unregisterPush } from '../utils/push';
 
 export default function ProfileScreen({ navigation, route }: any) {
   const user = route.params?.user || { name: 'Oyuncu', id: '' };
@@ -106,6 +107,7 @@ export default function ProfileScreen({ navigation, route }: any) {
   const handleLogout = async () => {
     if (Platform.OS === 'web') {
       if (window.confirm('Hesabınızdan çıkmak istediğinize emin misiniz?')) {
+        await unregisterPush();
         await AsyncStorage.removeItem('userToken');
         navigation.replace('Auth');
       }
@@ -116,7 +118,8 @@ export default function ProfileScreen({ navigation, route }: any) {
           text: 'Çıkış Yap', 
           style: 'destructive', 
           onPress: async () => {
-            await AsyncStorage.removeItem('userToken');
+            await unregisterPush();
+        await AsyncStorage.removeItem('userToken');
             navigation.replace('Auth');
           }
         }

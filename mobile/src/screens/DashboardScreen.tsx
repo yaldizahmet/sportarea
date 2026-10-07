@@ -1,5 +1,6 @@
 import { apiFetch } from '../utils/api';
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
+import * as Notifications from "expo-notifications";
 import {
   StyleSheet,
   Text,
@@ -19,6 +20,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { StatusBar } from "expo-status-bar";
 import { API_URL } from "../config/api";
 import { formatMatchDate, formatWeekly, isPastMatch, DAY_NAMES_SHORT } from "../utils/format";
+import { registerForPush, matchIdFromResponse } from "../utils/push";
 
 // Maç kartında "benim cevabım" rozeti
 const MY_STATUS_BADGE: Record<string, { label: string; color: string; bg: string; border: string }> = {
@@ -68,6 +70,31 @@ export default function DashboardScreen({ route, navigation }: any) {
       fetchData();
     }, [])
   );
+
+  // Push bildirimleri: izin iste + token'ı kaydet. Bildirime dokununca ilgili maçı aç.
+  useEffect(() => {
+    if (Platform.OS === 'web') return;
+    registerForPush();
+
+    const openMatch = (matchId: string | null) => {
+      if (matchId) navigation.navigate("MatchDetails", { match: { id: matchId }, user });
+    };
+    // Uygulama kapalıyken bildirime dokunularak açıldıysa
+    Notifications.getLastNotificationResponseAsync()
+      .then((r) => {
+        openMatch(matchIdFromResponse(r));
+        Notifications.clearLastNotificationResponseAsync?.();
+      })
+      .catch(() => {});
+    // Uygulama açıkken / arka plandayken dokunulursa
+    const sub = Notifications.addNotificationResponseReceivedListener((r) => {
+      openMatch(matchIdFromResponse(r));
+      fetchData();
+    });
+    // Uygulama açıkken bildirim gelirse listeyi tazele
+    const sub2 = Notifications.addNotificationReceivedListener(() => fetchData());
+    return () => { sub.remove(); sub2.remove(); };
+  }, []);
 
   const fetchData = async () => {
     try {

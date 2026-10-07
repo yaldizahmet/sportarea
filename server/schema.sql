@@ -152,3 +152,44 @@ create policy server_all on sportarea."MatchResponses" for all to sportarea_app 
 -- Sohbet ve müsaitlik özellikleri kaldırıldı. Canlı veritabanında boş "MatchMessages", "GroupMessages"
 -- ve "UserAvailability" tabloları hâlâ duruyor; kod artık bunları kullanmıyor, istenirse silinebilir:
 --   drop table sportarea."MatchMessages", sportarea."GroupMessages", sportarea."UserAvailability";
+
+-- v4: Push bildirimleri ve zamanlayıcı
+-- Her telefonun Expo push token'ı. Aynı telefon başka hesaba geçerse token o hesaba taşınır.
+create table sportarea."PushTokens" (
+  token text primary key,
+  "userId" text not null references sportarea."User"(id) on delete cascade,
+  platform text,
+  "createdAt" timestamptz not null default now(),
+  "updatedAt" timestamptz not null default now()
+);
+create index on sportarea."PushTokens" ("userId");
+
+-- Maçtan 24 saat önceki hatırlatma bir kez gitsin.
+alter table sportarea."Matches" add column "reminderSentAt" timestamptz;
+
+-- Uygulama ayarları. cron_secret: pg_cron'un sunucuyu çağırırken gönderdiği gizli anahtar.
+-- Sunucu da aynı değeri buradan okuyup karşılaştırıyor (Render'a ortam değişkeni eklemek gerekmiyor).
+create table sportarea."AppConfig" (
+  key text primary key,
+  value text not null
+);
+insert into sportarea."AppConfig" (key, value)
+values ('cron_secret', replace(gen_random_uuid()::text || gen_random_uuid()::text, '-', ''));
+
+grant select, insert, update, delete on sportarea."PushTokens" to sportarea_app;
+grant select on sportarea."AppConfig" to sportarea_app;
+alter table sportarea."PushTokens" enable row level security;
+alter table sportarea."AppConfig" enable row level security;
+create policy server_all on sportarea."PushTokens" for all to sportarea_app using (true) with check (true);
+create policy server_read on sportarea."AppConfig" for select to sportarea_app using (true);
+
+-- Zamanlayıcı (sadece Supabase'de; pg_cron + pg_net eklentileri gerekir):
+--   create extension if not exists pg_cron;  create extension if not exists pg_net;
+--   select cron.schedule('sportarea-tick', '7 * * * *', $$
+--     select net.http_post(
+--       url := 'https://sportarea.onrender.com/api/cron/tick',
+--       headers := jsonb_build_object('Content-Type', 'application/json',
+--                    'x-cron-secret', (select value from sportarea."AppConfig" where key = 'cron_secret')),
+--       body := '{}'::jsonb,
+--       timeout_milliseconds := 90000)
+--   $$);

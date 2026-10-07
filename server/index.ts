@@ -6,6 +6,7 @@ import { randomUUID } from 'node:crypto';
 import jwt from 'jsonwebtoken';
 import bcrypt from 'bcryptjs';
 import rateLimit from 'express-rate-limit';
+import { sendPushInBackground, sendPush, PushMessage } from './push';
 
 if (!process.env.JWT_SECRET) {
   console.error('FATAL ERROR: JWT_SECRET is not defined in environment variables.');
@@ -70,6 +71,18 @@ const canManageMatch = async (matchId: string, userId: string) => {
 // Türkiye yıl boyu UTC+3; sunucu (Render) UTC çalıştığı için hesaplar sabit +3 ile yapılır.
 const TR_OFFSET_MS = 3 * 60 * 60 * 1000;
 const DAY_SHORT = ['Paz', 'Pzt', 'Sal', 'Çar', 'Per', 'Cum', 'Cmt'];
+const DAY_LONG = ['Pazar', 'Pazartesi', 'Salı', 'Çarşamba', 'Perşembe', 'Cuma', 'Cumartesi'];
+
+// Bildirim metinleri için maç zamanı: "Cumartesi 21:00", gece maçında "Çarşamba gecesi 00:30".
+// Uygulamadaki gösterimle aynı kural: 06:00 öncesi bir önceki günün gecesidir.
+function friendlyMatchTime(ts: number) {
+  if (!ts) return '';
+  const d = new Date(ts + TR_OFFSET_MS);
+  const h = d.getUTCHours();
+  const hhmm = `${String(h).padStart(2, '0')}:${String(d.getUTCMinutes()).padStart(2, '0')}`;
+  const day = new Date(d.getTime() - (h < 6 ? 86400000 : 0)).getUTCDay();
+  return `${DAY_LONG[day]}${h < 6 ? ' gecesi' : ''} ${hhmm}`;
+}
 
 const parseHHMM = (t: string) => {
   const m = /^(\d{1,2}):(\d{2})$/.exec(String(t ?? '').trim());
@@ -104,8 +117,9 @@ function nextWeeklyOccurrence(dayOfWeek: number, time: string, nowMs = Date.now(
 // Grubun haftalık maç ayarı varsa ve ileri tarihli bir maçı yoksa, sıradakini açar.
 // "Her hafta varım" diyen üyeler kadroya otomatik eklenir, diğerlerine davet gider.
 // Zamanlayıcı yerine uygulama açıldıkça çağrılır: Render'ın ücretsiz sunucusu uykudayken iş kaçmaz.
-async function ensureUpcomingMatch(groupId: string) {
-  return tx(async (t) => {
+async function ensureUpcomingMatch(groupId: string): Promise<string | null> {
+  const pushes: PushMessage[] = [];
+  const matchId = await tx(async (t) => {
     // Aynı anda iki istek gelirse aynı maç iki kez açılmasın.
     await t.run('SELECT pg_advisory_xact_lock(hashtext(?))', [groupId]);
 
@@ -148,16 +162,32 @@ async function ensureUpcomingMatch(groupId: string) {
           `${g.name}: haftalık maç açıldı (${next.label}). "Her hafta varım" dediğin için ${status === 'ACTIVE' ? 'kadroya' : 'yedek listesine'} eklendin. Gelemeyeceksen maç sayfasından "Yokum" de.`,
           'INFO', JSON.stringify({ matchId })
         ]);
+        pushes.push({
+          userId: m.userId,
+          title: `${g.name} · ${friendlyMatchTime(next.ts)}`,
+          body: status === 'ACTIVE'
+            ? 'Haftalık maç açıldı, kadrodasın. Gelemeyeceksen "Yokum" demeyi unutma.'
+            : 'Haftalık maç açıldı. Kadro dolu olduğu için yedek listesindesin.',
+          data: { matchId },
+        });
       } else {
         await t.run('INSERT INTO "Notifications" (id, "userId", message, type, metadata) VALUES (?, ?, ?, ?, ?)', [
           randomUUID(), m.userId,
           `${g.name}: haftalık maç açıldı (${next.label}, ${g.weeklyLocation}). Geliyor musun?`,
           'MATCH_INVITE', JSON.stringify({ matchId })
         ]);
+        pushes.push({
+          userId: m.userId,
+          title: `${g.name} · ${friendlyMatchTime(next.ts)}`,
+          body: `Haftalık maç açıldı (${g.weeklyLocation}). Geliyor musun?`,
+          data: { matchId },
+        });
       }
     }
     return matchId;
   });
+  sendPushInBackground(pushes);
+  return matchId;
 }
 
 // Kullanıcının tüm gruplarında sıradaki haftalık maçın açık olduğundan emin olur.
@@ -180,7 +210,8 @@ app.get('/', (req, res) => {
 
 // Authentication Middleware
 const authenticateToken = (req: any, res: any, next: any) => {
-  if (req.path === '/login' || req.path === '/register' || req.path === '/me') {
+  // /cron/tick kendi gizli anahtarıyla korunuyor (aşağıda).
+  if (req.path === '/login' || req.path === '/register' || req.path === '/me' || req.path === '/cron/tick') {
     return next();
   }
   const token = req.headers.authorization?.split(' ')[1];
@@ -576,6 +607,106 @@ app.delete('/api/notifications/:id', async (req, res) => {
   }
 });
 
+// PUSH TOKENS
+// Telefon, bildirim izni verince Expo push token'ını buraya kaydeder.
+// Aynı telefonla başka hesaba geçilirse token yeni hesaba taşınır.
+app.post('/api/push-token', async (req, res) => {
+  try {
+    const token = String(req.body?.token ?? '').trim();
+    if (!/^(Exponent|Expo)PushToken\[.+\]$/.test(token)) return res.status(400).json({ error: 'Geçersiz token.' });
+    const platform = String(req.body?.platform ?? '').slice(0, 20) || null;
+    await db.run(
+      `INSERT INTO "PushTokens" (token, "userId", platform) VALUES (?, ?, ?)
+       ON CONFLICT (token) DO UPDATE SET "userId" = EXCLUDED."userId", platform = EXCLUDED.platform, "updatedAt" = now()`,
+      [token, req.user.id, platform]
+    );
+    res.json({ message: 'Bildirimler açık.' });
+  } catch (e) {
+    console.error('Push token error:', e);
+    res.status(500).json({ error: 'Token kaydedilemedi.' });
+  }
+});
+
+// Çıkış yaparken: bu telefona artık bu hesabın bildirimleri gelmesin.
+app.delete('/api/push-token', async (req, res) => {
+  try {
+    const token = String(req.body?.token ?? '').trim();
+    await db.run('DELETE FROM "PushTokens" WHERE token = ? AND "userId" = ?', [token, req.user.id]);
+    res.json({ message: 'Tamam' });
+  } catch (e) {
+    res.status(500).json({ error: 'Silinemedi.' });
+  }
+});
+
+// ZAMANLAYICI
+// Supabase'deki pg_cron saatte bir bu adresi çağırır (Render uyuyor olsa bile uyandırır).
+// Gizli anahtar veritabanında (sportarea."AppConfig") duruyor; zamanlayıcı da oradan okuyor.
+// Böylece Render'a ayrıca ortam değişkeni eklemek gerekmiyor.
+const REMINDER_WINDOW_MS = 24 * 60 * 60 * 1000;
+
+async function runCronTick() {
+  // 1) Haftalık maçı olan her grupta sıradaki maç açık olsun (kimse uygulamayı açmasa da).
+  const scheduled = await db.all(`SELECT id FROM "Groups" WHERE "weeklyDay" IS NOT NULL`);
+  let opened = 0;
+  for (const g of scheduled) {
+    try { if (await ensureUpcomingMatch(g.id)) opened++; } catch (err) { console.error('Cron weekly error:', err); }
+  }
+
+  // 2) Maça 24 saatten az kalmışsa: cevap vermeyenlere ve "Belki" diyenlere bir kez hatırlat.
+  //    reminderSentAt'i önce işaretleyip ("claim") sonra gönderiyoruz, böylece iki tetikleme çift göndermez.
+  const now = Date.now();
+  const due = await db.all(
+    `UPDATE "Matches" SET "reminderSentAt" = now()
+     WHERE status = 'OPEN' AND "groupId" IS NOT NULL AND "reminderSentAt" IS NULL
+       AND "matchTimestamp" > ? AND "matchTimestamp" <= ?
+     RETURNING id, "groupId", location, "matchTimestamp", "maxPlayers"`,
+    [now, now + REMINDER_WINDOW_MS]
+  );
+
+  const pushes: PushMessage[] = [];
+  for (const m of due) {
+    const g = await db.get('SELECT name FROM "Groups" WHERE id = ?', [m.groupId]);
+    const active = await db.get(`SELECT COUNT(*) AS c FROM "MatchPlayers" WHERE "matchId" = ? AND status = 'ACTIVE'`, [m.id]);
+    const people = await db.all(
+      `SELECT gm."userId", r.response
+       FROM "GroupMembers" gm
+       LEFT JOIN "MatchResponses" r ON r."matchId" = ? AND r."userId" = gm."userId"
+       WHERE gm."groupId" = ?
+         AND NOT EXISTS (SELECT 1 FROM "MatchPlayers" mp WHERE mp."matchId" = ? AND mp."userId" = gm."userId")
+         AND (r.response IS NULL OR r.response = 'MAYBE')`,
+      [m.id, m.groupId, m.id]
+    );
+    const when = friendlyMatchTime(Number(m.matchTimestamp));
+    const spots = Math.max(0, m.maxPlayers - active.c);
+    for (const p of people) {
+      const maybe = p.response === 'MAYBE';
+      const body = maybe
+        ? `"Belki" demiştin. Kesinleştirir misin? ${spots > 0 ? `Kadroda ${spots} yer var.` : 'Kadro dolu, yedeğe girebilirsin.'}`
+        : `Henüz cevap vermedin. ${spots > 0 ? `Kadroda ${spots} yer var.` : 'Kadro dolu, yedeğe girebilirsin.'}`;
+      await db.run('INSERT INTO "Notifications" (id, "userId", message, type, metadata) VALUES (?, ?, ?, ?, ?)', [
+        randomUUID(), p.userId, `${g?.name || 'Maç'} · ${when} (${m.location}): ${body}`, 'MATCH_INVITE', JSON.stringify({ matchId: m.id })
+      ]);
+      pushes.push({ userId: p.userId, title: `${g?.name || 'Maç'} · ${when}`, body, data: { matchId: m.id } });
+    }
+  }
+  const { sent } = await sendPush(pushes);
+  return { opened, remindedMatches: due.length, reminders: pushes.length, pushSent: sent };
+}
+
+app.post('/api/cron/tick', async (req, res) => {
+  try {
+    const cfg = await db.get(`SELECT value FROM "AppConfig" WHERE key = 'cron_secret'`);
+    const given = String(req.headers['x-cron-secret'] ?? '');
+    if (!cfg?.value || given.length < 16 || given !== cfg.value) return res.status(401).json({ error: 'Yetkisiz.' });
+    const result = await runCronTick();
+    console.log('Cron tick:', JSON.stringify(result));
+    res.json(result);
+  } catch (e) {
+    console.error('Cron tick error:', e);
+    res.status(500).json({ error: 'Zamanlayıcı çalışırken hata oluştu.' });
+  }
+});
+
 // MATCHES API
 // Her maç kartı için: giriş yapan kişinin cevabı (myStatus) ve kadrodaki kişi sayısı.
 // myStatus: ACTIVE (varım), RESERVE (varım, yedekte), MAYBE (belki), DECLINED (yokum), null (cevap yok)
@@ -622,6 +753,7 @@ app.post('/api/matches', async (req, res) => {
     if (!groupId) return res.status(400).json({ error: 'Maç bir gruba bağlı olmalı.' });
     if (!(await isGroupMember(groupId, creatorId))) return res.status(403).json({ error: 'Bu grubun üyesi değilsiniz.' });
     const id = randomUUID();
+    const pushes: PushMessage[] = [];
 
     await tx(async (t) => {
       await t.run(
@@ -643,9 +775,16 @@ app.post('/api/matches', async (req, res) => {
             'MATCH_INVITE',
             JSON.stringify({ matchId: id })
           ]);
+          pushes.push({
+            userId: m.userId,
+            title: `${groupData?.name || 'Yeni maç'} · ${friendlyMatchTime(Number(matchTimestamp)) || date}`,
+            body: `Yeni maç kuruldu (${location}). Geliyor musun?`,
+            data: { matchId: id },
+          });
         }
       }
     });
+    sendPushInBackground(pushes);
 
     res.json({ message: 'Maç oluşturuldu', match: { id, date, time, location, maxPlayers } });
   } catch (error) {
@@ -737,7 +876,8 @@ type MatchAnswer = 'YES' | 'NO' | 'MAYBE';
 type RespondResult = { status: number; body: any };
 
 async function respondToMatch(matchId: string, userId: string, response: MatchAnswer): Promise<RespondResult> {
-  return tx(async (t) => {
+  const pushes: PushMessage[] = [];
+  const result = await tx(async (t): Promise<RespondResult> => {
     // Aynı anda gelen cevaplar kontenjanı bozmasın diye maç satırını kilitliyoruz.
     const matchRow = await t.get(
       'SELECT "groupId", "creatorId", location, "maxPlayers", "matchTimestamp", "lockoutHours", status FROM "Matches" WHERE id = ? FOR UPDATE',
@@ -810,6 +950,12 @@ async function respondToMatch(matchId: string, userId: string, response: MatchAn
             `Müjde! ${matchRow.location} maçında bir kişilik yer açıldı ve yedeğe alındığın listede AS KADROYA yükseldin!`,
             'INFO'
           ]);
+          pushes.push({
+            userId: firstReserve.userId,
+            title: 'Kadroya girdin! ⚽',
+            body: `${friendlyMatchTime(Number(matchRow.matchTimestamp))} · ${matchRow.location} maçında yer açıldı, artık as kadrodasın.`,
+            data: { matchId },
+          });
         }
       }
     }
@@ -829,6 +975,8 @@ async function respondToMatch(matchId: string, userId: string, response: MatchAn
       }
     };
   });
+  sendPushInBackground(pushes);
+  return result;
 }
 
 app.post('/api/matches/:id/respond', async (req, res) => {
@@ -1002,6 +1150,15 @@ app.post('/api/matches/:id/finish', async (req, res) => {
         [`${matchRow?.location || 'Maç'} tamamlandı! İstatistiklerin işlendi. Hemen detaylara göz atabilir ve oyuncuları puanlayabilirsin.`, id]
       );
     });
+
+    // Sadece sahada oynayanlara: MVP oyu ve puanlama hatırlatması
+    const played = await db.all(`SELECT "userId" FROM "MatchPlayers" WHERE "matchId" = ? AND status = 'ACTIVE' AND "userId" <> ?`, [id, req.user.id]);
+    sendPushInBackground(played.map((p: any) => ({
+      userId: p.userId,
+      title: score ? `Maç bitti: ${score}` : 'Maç bitti',
+      body: 'MVP oyunu ver, takım arkadaşlarını puanla.',
+      data: { matchId: id },
+    })));
 
     res.json({ message: 'Maç başarıyla tamamlandı.' });
   } catch (error) {

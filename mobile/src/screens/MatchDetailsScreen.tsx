@@ -66,7 +66,8 @@ const getCoordinates = (team: any[], isTeamA: boolean) => {
 };
 
 export default function MatchDetailsScreen({ route, navigation }: any) {
-  const matchInfo = route.params?.match || {};
+  // Bildirime dokunarak gelindiğinde elimizde sadece maç kimliği olur; geri kalanı sunucudan tamamlanır.
+  const [matchInfo, setMatchInfo] = useState<any>(route.params?.match || {});
   const user = route.params?.user || {};
 
   const [players, setPlayers] = useState<any[]>([]);
@@ -149,7 +150,6 @@ export default function MatchDetailsScreen({ route, navigation }: any) {
       fetchMatchInfo();
       fetchPlayers();
       fetchMvp();
-      fetchWeather(matchInfo.location, Number(matchInfo.matchTimestamp) || 0);
     }
   }, [matchInfo.id]);
 
@@ -161,6 +161,10 @@ export default function MatchDetailsScreen({ route, navigation }: any) {
       if (data.score) setMatchScore(data.score);
       if (data.matchTimestamp) setMatchTimestamp(data.matchTimestamp);
       if (data.groupCreatorId) setGroupCreatorId(data.groupCreatorId);
+      if (data.id) {
+        setMatchInfo((prev: any) => ({ ...prev, ...data }));
+        fetchWeather(data.location, Number(data.matchTimestamp) || 0);
+      }
     } catch(e) {}
   };
 

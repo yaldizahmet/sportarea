@@ -7,7 +7,11 @@
     "scheme": "sporarea",
     "userInterfaceStyle": "dark",
     "android": {
-      "package": "com.thend.sporarea"
+      "package": "com.thend.sporarea",
+      "blockedPermissions": [
+        "android.permission.CAMERA",
+        "android.permission.RECORD_AUDIO"
+      ]
     },
     "extra": {
       "eas": {
@@ -21,6 +25,12 @@
         {
           "photosPermission": "Profil fotoğrafını seçebilmen için galerine erişmemiz gerekiyor.",
           "cameraPermission": false
+        }
+      ],
+      [
+        "expo-notifications",
+        {
+          "color": "#00E676"
         }
       ]
     ]
