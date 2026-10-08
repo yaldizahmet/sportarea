@@ -323,6 +323,18 @@ export default function AuthScreen({ navigation }: any) {
                 <Text style={styles.switchButton}>{isLogin ? "Yeni Kayıt" : "Giriş Yap"}</Text>
               </TouchableOpacity>
             </View>
+
+            {isLogin && (
+              <TouchableOpacity
+                style={{ alignItems: 'center', marginTop: 18 }}
+                onPress={() => Alert.alert(
+                  'Şifremi unuttum',
+                  'Grubunu kuran kişiden geçici şifre iste: grup sayfasında adının yanındaki anahtar simgesine basması yeterli. Geçici şifreyle girince yeni şifreni belirlersin.'
+                )}
+              >
+                <Text style={{ color: '#94A3B8', fontSize: 14, textDecorationLine: 'underline' }}>Şifremi unuttum</Text>
+              </TouchableOpacity>
+            )}
           </Animated.View>
         </ScrollView>
       </KeyboardAvoidingView>

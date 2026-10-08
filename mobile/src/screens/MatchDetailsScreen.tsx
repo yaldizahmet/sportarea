@@ -19,7 +19,7 @@ import { LinearGradient } from "expo-linear-gradient";
 import { Ionicons } from "@expo/vector-icons";
 import { StatusBar } from "expo-status-bar";
 import { API_URL } from "../config/api";
-import { formatMatchDate, formatClock } from "../utils/format";
+import { formatMatchDate, formatClock, formatMoney, shareOf } from "../utils/format";
 
 const getCoordinates = (team: any[], isTeamA: boolean) => {
   const width = 320;
@@ -98,6 +98,9 @@ export default function MatchDetailsScreen({ route, navigation }: any) {
   const [ratingTarget, setRatingTarget] = useState<any>(null);
   const [ratingScores, setRatingScores] = useState<Record<string, number | null>>({ speed: null, shoot: null, pass: null, physique: null });
   const [refreshing, setRefreshing] = useState(false);
+  // Saha ücreti
+  const [feeModal, setFeeModal] = useState(false);
+  const [feeInput, setFeeInput] = useState('');
 
   // MVP
   const [mvpModalVisible, setMvpModalVisible] = useState(false);
@@ -436,6 +439,44 @@ export default function MatchDetailsScreen({ route, navigation }: any) {
   const unassigned = activePlayers.filter((p: any) => p.team !== 'A' && p.team !== 'B');
   const teamsDivided = teamA.length > 0 || teamB.length > 0;
 
+  const pitchFee: number | null = matchInfo.pitchFee ?? null;
+  const share = shareOf(pitchFee, activePlayers.length);
+  const paidCount = activePlayers.filter((p: any) => p.paid).length;
+  const me = players.find((p: any) => p.id === user.id);
+
+  const saveFee = async () => {
+    try {
+      const res = await apiFetch(`${API_URL}/matches/${matchInfo.id}/fee`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ fee: feeInput ? parseInt(feeInput, 10) : null }),
+      });
+      const data = await res.json();
+      if (res.ok) {
+        setMatchInfo((prev: any) => ({ ...prev, pitchFee: data.pitchFee }));
+        setFeeModal(false);
+      } else Alert.alert('Olmadı', data.error || 'Kaydedilemedi.');
+    } catch (e) {
+      Alert.alert('Hata', 'Bağlantı sorunu yaşandı.');
+    }
+  };
+
+  const togglePaid = async (player: any) => {
+    const paid = !player.paid;
+    setPlayers((prev) => prev.map((p: any) => (p.id === player.id ? { ...p, paid } : p)));
+    try {
+      const res = await apiFetch(`${API_URL}/matches/${matchInfo.id}/paid`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ userId: player.id, paid }),
+      });
+      if (!res.ok) throw new Error();
+    } catch (e) {
+      setPlayers((prev) => prev.map((p: any) => (p.id === player.id ? { ...p, paid: !paid } : p)));
+      Alert.alert('Hata', 'Kaydedilemedi.');
+    }
+  };
+
   const renderPlayerCard = (player: any, idx: number, badgeText: string, badgeStyle: any, textStyle: any) => {
     // Puanlama: maç bitti, ben oynadım, o da oynadı ve kendim değilim.
     const canRate = iPlayed && player.status === 'ACTIVE' && player.id !== user.id;
@@ -455,6 +496,15 @@ export default function MatchDetailsScreen({ route, navigation }: any) {
             <Text style={styles.playerName}>{String(player.name)}</Text>
             <Text style={styles.playerPosition}>{String(player.position || "Orta Saha")}</Text>
             {player.goals > 0 && <Text style={{color: '#00E676', fontSize: 12, marginTop: 3, fontWeight: 'bold'}}>⚽ {player.goals} Gol</Text>}
+            {pitchFee && player.status === 'ACTIVE' ? (
+              isManager ? (
+                <TouchableOpacity onPress={() => togglePaid(player)} style={[styles.paidChip, player.paid && styles.paidChipOn]} hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}>
+                  <Text style={[styles.paidChipText, player.paid && { color: '#0F172A' }]}>{player.paid ? '✓ Ödedi' : 'Ödemedi'}</Text>
+                </TouchableOpacity>
+              ) : player.paid ? (
+                <Text style={{ color: '#00E676', fontSize: 12, marginTop: 3 }}>✓ Ödedi</Text>
+              ) : null
+            ) : null}
           </View>
         </View>
         <View style={[styles.statusBadge, canRate ? {backgroundColor: 'rgba(255, 193, 7, 0.2)'} : badgeStyle]}>
@@ -560,6 +610,33 @@ export default function MatchDetailsScreen({ route, navigation }: any) {
               <Text style={styles.locationSub}>Haritada aç / yol tarifi al</Text>
             </View>
             <Ionicons name="open-outline" size={18} color="#64748B" />
+          </TouchableOpacity>
+        ) : null}
+
+        {pitchFee ? (
+          <View style={styles.feeCard}>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.feeLabel}>💸 SAHA ÜCRETİ</Text>
+              <Text style={styles.feeMain}>
+                {formatMoney(pitchFee)}
+                {share ? <Text style={styles.feeSub}>  ·  kişi başı {formatMoney(share)}</Text> : null}
+              </Text>
+              <Text style={styles.feeHint}>
+                {!isCompleted ? 'Kadroya göre değişir; maç günü kesinleşir. ' : ''}
+                {activePlayers.length > 0 ? `${paidCount}/${activePlayers.length} kişi ödedi.` : ''}
+                {me?.status === 'ACTIVE' ? (me.paid ? ' Sen ödedin ✅' : ' Sen henüz ödemedin.') : ''}
+              </Text>
+            </View>
+            {isManager && (
+              <TouchableOpacity onPress={() => { setFeeInput(String(pitchFee)); setFeeModal(true); }} style={{ padding: 6 }}>
+                <Text style={styles.feeEdit}>Düzenle</Text>
+              </TouchableOpacity>
+            )}
+          </View>
+        ) : isManager && !isCompleted ? (
+          <TouchableOpacity onPress={() => { setFeeInput(''); setFeeModal(true); }} style={styles.feeAdd}>
+            <Ionicons name="cash-outline" size={18} color="#94A3B8" />
+            <Text style={styles.feeAddText}>Saha ücreti ekle (kişi başı payı hesaplansın)</Text>
           </TouchableOpacity>
         ) : null}
 
@@ -746,6 +823,38 @@ export default function MatchDetailsScreen({ route, navigation }: any) {
       )}
       
 
+
+      {/* SAHA ÜCRETİ */}
+      <Modal visible={feeModal} transparent animationType="fade" onRequestClose={() => setFeeModal(false)}>
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContent}>
+            <Text style={styles.modalTitle}>Saha ücreti</Text>
+            <Text style={{ color: '#94A3B8', textAlign: 'center', marginBottom: 16 }}>Toplam tutarı yaz; kişi başı pay sahada oynayan sayısına göre hesaplanır. Boş bırakırsan ücret kaldırılır.</Text>
+            <TextInput
+              style={styles.feeInput}
+              value={feeInput}
+              onChangeText={(t) => setFeeInput(t.replace(/[^0-9]/g, ''))}
+              keyboardType="numeric"
+              placeholder="Örn: 1400"
+              placeholderTextColor="#64748B"
+              autoFocus
+            />
+            {feeInput && activePlayers.length > 0 ? (
+              <Text style={{ color: '#CBD5E1', textAlign: 'center', marginBottom: 12 }}>
+                Şu anki kadroyla kişi başı {formatMoney(shareOf(parseInt(feeInput, 10), activePlayers.length))}
+              </Text>
+            ) : null}
+            <TouchableOpacity style={styles.saveBtn} onPress={saveFee}>
+              <LinearGradient colors={['#00C853', '#B2FF59']} start={{x: 0, y: 0}} end={{x: 1, y: 0}} style={styles.saveBtnGradient}>
+                <Text style={styles.saveBtnText}>KAYDET</Text>
+              </LinearGradient>
+            </TouchableOpacity>
+            <TouchableOpacity style={styles.cancelBtn} onPress={() => setFeeModal(false)}>
+              <Text style={styles.cancelBtnText}>Vazgeç</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
 
       {/* FINISH MODAL */}
       <Modal visible={finishModalVisible} transparent animationType="slide">
@@ -1010,6 +1119,18 @@ const styles = StyleSheet.create({
   statusText: { fontSize: 12, fontWeight: "bold" },
   statusTextApproved: { color: "#00E676" },
   statusTextPending: { color: "#F59E0B" },
+  feeCard: { flexDirection: 'row', alignItems: 'center', backgroundColor: 'rgba(244, 63, 94, 0.07)', borderRadius: 16, padding: 16, marginBottom: 20, borderWidth: 1, borderColor: 'rgba(244, 63, 94, 0.3)' },
+  feeLabel: { color: '#FB7185', fontSize: 12, fontWeight: 'bold', letterSpacing: 1 },
+  feeMain: { color: '#FFFFFF', fontSize: 22, fontWeight: '900', marginTop: 4 },
+  feeSub: { color: '#CBD5E1', fontSize: 15, fontWeight: '600' },
+  feeHint: { color: '#94A3B8', fontSize: 12, marginTop: 6, lineHeight: 17 },
+  feeEdit: { color: '#00E676', fontWeight: 'bold' },
+  feeAdd: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 12, paddingHorizontal: 14, borderRadius: 14, borderWidth: 1, borderStyle: 'dashed', borderColor: 'rgba(148, 163, 184, 0.4)', marginBottom: 20 },
+  feeAddText: { color: '#94A3B8', fontSize: 14 },
+  feeInput: { backgroundColor: 'rgba(0,0,0,0.25)', color: '#FFFFFF', borderRadius: 12, paddingHorizontal: 14, paddingVertical: 14, fontSize: 22, fontWeight: 'bold', textAlign: 'center', borderWidth: 1, borderColor: 'rgba(255,255,255,0.1)', marginBottom: 12 },
+  paidChip: { alignSelf: 'flex-start', marginTop: 5, paddingHorizontal: 10, paddingVertical: 3, borderRadius: 8, borderWidth: 1, borderColor: 'rgba(148, 163, 184, 0.5)' },
+  paidChipOn: { backgroundColor: '#00E676', borderColor: '#00E676' },
+  paidChipText: { color: '#CBD5E1', fontSize: 12, fontWeight: 'bold' },
   mvpCard: { backgroundColor: 'rgba(255, 215, 0, 0.08)', borderRadius: 16, padding: 16, marginBottom: 20, borderWidth: 1, borderColor: 'rgba(255, 215, 0, 0.3)', alignItems: 'center' },
   mvpLabel: { color: '#FFD700', fontSize: 12, fontWeight: 'bold', letterSpacing: 1 },
   mvpName: { color: '#FFFFFF', fontSize: 20, fontWeight: '900', marginTop: 6 },

@@ -21,7 +21,8 @@ import { LinearGradient } from "expo-linear-gradient";
 import { Ionicons } from "@expo/vector-icons";
 import { StatusBar } from "expo-status-bar";
 import { API_URL } from "../config/api";
-import { formatMatchDate, formatWeekly, isPastMatch, DAY_NAMES_SHORT } from "../utils/format";
+import { formatMatchDate, formatWeekly, isPastMatch, DAY_NAMES_SHORT, formatMoney, shareOf } from "../utils/format";
+import ChangePasswordModal from "../components/ChangePasswordModal";
 import { registerForPush, matchIdFromResponse } from "../utils/push";
 import { consumePendingInvite } from "../utils/invite";
 
@@ -63,6 +64,9 @@ export default function DashboardScreen({ route, navigation }: any) {
   const [currentMonth, setCurrentMonth] = useState<Date>(new Date());
   const [maxPlayers, setMaxPlayers] = useState("14");
   const [lockoutHours, setLockoutHours] = useState(3);
+  const [pitchFee, setPitchFee] = useState("");
+  // Geçici şifreyle girildiyse önce yeni şifre belirlenir.
+  const [mustChangePassword, setMustChangePassword] = useState(Boolean(user.mustChangePassword));
   const [selectedGroup, setSelectedGroup] = useState<string | null>(null);
 
   // Gruba Katıl / Grup Kur
@@ -177,6 +181,7 @@ export default function DashboardScreen({ route, navigation }: any) {
     // Grubun haftalık sahası varsa onu öner; kullanıcı elle yazdıysa ezme.
     if (g.weeklyLocation && !matchLocation) setMatchLocation(g.weeklyLocation);
     if (g.weeklyMaxPlayers) setMaxPlayers(String(g.weeklyMaxPlayers));
+    if (g.weeklyFee && !pitchFee) setPitchFee(String(g.weeklyFee));
   };
 
   const openCreateMatch = () => {
@@ -194,6 +199,7 @@ export default function DashboardScreen({ route, navigation }: any) {
     setSelectedTime("");
     setMaxPlayers("14");
     setLockoutHours(3);
+    setPitchFee("");
   };
 
   const handleCreateMatch = async () => {
@@ -232,6 +238,7 @@ export default function DashboardScreen({ route, navigation }: any) {
           maxPlayers: parseInt(maxPlayers),
           matchTimestamp: start.getTime(),
           lockoutHours,
+          pitchFee: pitchFee ? parseInt(pitchFee, 10) : null,
         }),
       });
       const data = await response.json();
@@ -317,6 +324,9 @@ export default function DashboardScreen({ route, navigation }: any) {
 
   const renderMatchCard = (match: any, past: boolean) => {
     const s = MY_STATUS_BADGE[match.myStatus ?? 'NONE'] ?? MY_STATUS_BADGE.NONE;
+    // Oynadığım, ücreti olan ve henüz ödemediğim geçmiş maç: payımı göster
+    const owe = past && match.myStatus === 'ACTIVE' && match.pitchFee && match.myPaid === false
+      ? shareOf(match.pitchFee, Number(match.activeCount)) : null;
     return (
       <TouchableOpacity
         key={match.id}
@@ -338,6 +348,11 @@ export default function DashboardScreen({ route, navigation }: any) {
         </View>
 
         <View style={styles.rowRightSection}>
+          {owe ? (
+            <View style={[styles.miniBadge, { backgroundColor: 'rgba(244, 63, 94, 0.15)', borderColor: 'rgba(244, 63, 94, 0.45)', marginRight: 6 }]}>
+              <Text style={[styles.miniBadgeText, { color: '#FB7185', fontWeight: 'bold' }]}>💸 {formatMoney(owe)}</Text>
+            </View>
+          ) : null}
           {past ? (
             <View style={[styles.miniBadge, { backgroundColor: 'rgba(255, 193, 7, 0.15)', borderColor: 'rgba(255, 193, 7, 0.4)' }]}>
               <Text style={[styles.miniBadgeText, { color: '#FFC107', fontWeight: 'bold' }]}>
@@ -595,6 +610,24 @@ export default function DashboardScreen({ route, navigation }: any) {
                 />
               </View>
 
+              <Text style={localStyles.fieldLabel}>Saha ücreti (toplam, isteğe bağlı)</Text>
+              <View style={styles.modalInputContainer}>
+                <Ionicons name="cash-outline" size={20} color="#00E676" style={styles.modalIcon} />
+                <TextInput
+                  style={styles.modalInput}
+                  placeholder="Örn: 1400"
+                  placeholderTextColor="#A0A0A0"
+                  keyboardType="numeric"
+                  value={pitchFee}
+                  onChangeText={(t) => setPitchFee(t.replace(/[^0-9]/g, ''))}
+                />
+                {pitchFee && parseInt(maxPlayers) > 0 ? (
+                  <Text style={{ color: '#94A3B8', fontSize: 12, marginLeft: 8 }}>
+                    ~{formatMoney(shareOf(parseInt(pitchFee, 10), parseInt(maxPlayers, 10)))}/kişi
+                  </Text>
+                ) : null}
+              </View>
+
               <Text style={localStyles.fieldLabel}>Son değişiklik (maçtan kaç saat önce kilitlensin)</Text>
               <View style={{ flexDirection: 'row', marginBottom: 15 }}>
                 {LOCKOUT_OPTIONS.map((h) => (
@@ -805,6 +838,11 @@ export default function DashboardScreen({ route, navigation }: any) {
             </View>
          </View>
       </Modal>
+      <ChangePasswordModal
+        visible={mustChangePassword}
+        forced
+        onDone={() => { user.mustChangePassword = false; setMustChangePassword(false); }}
+      />
     </SafeAreaView>
   );
 }

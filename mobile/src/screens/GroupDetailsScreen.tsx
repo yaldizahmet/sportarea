@@ -20,7 +20,7 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
 import { StatusBar } from 'expo-status-bar';
 import { API_URL } from '../config/api';
-import { DAY_NAMES, DAY_NAMES_SHORT, formatWeekly } from '../utils/format';
+import { DAY_NAMES, DAY_NAMES_SHORT, formatWeekly, formatMoney, shareOf } from '../utils/format';
 import { inviteLink } from '../utils/invite';
 
 // Pazartesi'den başlayan sıra (halı saha haftası böyle düşünülüyor)
@@ -49,6 +49,7 @@ export default function GroupDetailsScreen({ route, navigation }: any) {
   const [location, setLocation] = useState('');
   const [maxPlayers, setMaxPlayers] = useState('14');
   const [lockoutHours, setLockoutHours] = useState(3);
+  const [fee, setFee] = useState('');
   const [savingSchedule, setSavingSchedule] = useState(false);
 
   const isCreator = group.creatorId === user.id;
@@ -88,6 +89,7 @@ export default function GroupDetailsScreen({ route, navigation }: any) {
     setLocation(group.weeklyLocation || '');
     setMaxPlayers(String(group.weeklyMaxPlayers || 14));
     setLockoutHours(group.weeklyLockoutHours ?? 3);
+    setFee(group.weeklyFee ? String(group.weeklyFee) : '');
     setEditingSchedule(true);
   };
 
@@ -101,7 +103,7 @@ export default function GroupDetailsScreen({ route, navigation }: any) {
       const res = await apiFetch(`${API_URL}/groups/${group.id}/schedule`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ day, time, location: location.trim(), maxPlayers: parseInt(maxPlayers, 10), lockoutHours }),
+        body: JSON.stringify({ day, time, location: location.trim(), maxPlayers: parseInt(maxPlayers, 10), lockoutHours, fee: fee ? parseInt(fee, 10) : null }),
       });
       const data = await res.json();
       if (res.ok) {
@@ -248,6 +250,28 @@ export default function GroupDetailsScreen({ route, navigation }: any) {
       }
     });
 
+  // Şifresini unutan üyeye geçici şifre ver
+  const handleResetPassword = (member: any) =>
+    confirmThen('Geçici şifre', `${member.name} için geçici şifre oluşturulsun mu? Eski şifresi geçersiz olur.`, 'Oluştur', async () => {
+      try {
+        const res = await apiFetch(`${API_URL}/groups/${group.id}/members/${member.id}/reset-password`, { method: 'POST' });
+        const data = await res.json();
+        if (!res.ok) return showAlert('Olmadı', data.error || 'Geçici şifre oluşturulamadı.');
+        const text = `${data.name} için geçici şifre: ${data.tempPassword}\nGiriş e-postası: ${data.email}\n\nBunu kendisine ilet. İlk girişte yeni şifresini belirleyecek.`;
+        if (Platform.OS === 'web') {
+          try { await navigator.clipboard.writeText(`SporArea geçici şifren: ${data.tempPassword} (e-posta: ${data.email})`); } catch {}
+          showAlert('Geçici şifre (panoya kopyalandı)', text);
+        } else {
+          Alert.alert('Geçici şifre', text, [
+            { text: 'Paylaş', onPress: () => Share.share({ message: `SporArea geçici şifren: ${data.tempPassword}\nE-posta: ${data.email}\nGirişte yeni şifreni belirleyeceksin.` }) },
+            { text: 'Tamam' },
+          ]);
+        }
+      } catch (e) {
+        showAlert('Hata', 'Bağlantı sorunu yaşandı.');
+      }
+    });
+
   const handleRemoveMember = (member: any) =>
     confirmThen('Üyeyi çıkar', `${member.name} gruptan çıkarılsın mı? Yaklaşan maçlardaki yeri yedeğe geçer.`, 'Çıkar', async () => {
       try {
@@ -325,6 +349,11 @@ export default function GroupDetailsScreen({ route, navigation }: any) {
                 <Text style={styles.weeklySub}>
                   {group.weeklyLocation} · {group.weeklyMaxPlayers} kişi · son değişiklik maçtan {group.weeklyLockoutHours ?? 3} saat önce
                 </Text>
+                {group.weeklyFee ? (
+                  <Text style={styles.weeklySub}>
+                    Saha ücreti {formatMoney(group.weeklyFee)} · dolu kadroda kişi başı {formatMoney(shareOf(group.weeklyFee, group.weeklyMaxPlayers))}
+                  </Text>
+                ) : null}
                 <Text style={styles.weeklyHint}>
                   Maç her hafta kendiliğinden açılır, gruba davet gider. Ayrıca kurmana gerek yok.
                 </Text>
@@ -392,6 +421,16 @@ export default function GroupDetailsScreen({ route, navigation }: any) {
                 </View>
               </View>
 
+              <Text style={styles.fieldLabel}>Saha ücreti (toplam ₺, isteğe bağlı)</Text>
+              <TextInput
+                style={styles.input}
+                value={fee}
+                onChangeText={(t) => setFee(t.replace(/[^0-9]/g, ''))}
+                keyboardType="numeric"
+                placeholder="Örn: 1400"
+                placeholderTextColor="#64748B"
+              />
+
               <View style={{ flexDirection: 'row', gap: 10, marginTop: 6 }}>
                 <TouchableOpacity style={[styles.secondaryBtn, { flex: 1 }]} onPress={() => setEditingSchedule(false)}>
                   <Text style={styles.secondaryBtnText}>Vazgeç</Text>
@@ -458,9 +497,14 @@ export default function GroupDetailsScreen({ route, navigation }: any) {
                       <Text style={styles.memberMatches}>{String(member.matches || 0)}</Text>
                     </View>
                     {isCreator && !founder && (
-                      <TouchableOpacity onPress={() => handleRemoveMember(member)} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }} accessibilityLabel={`${member.name} gruptan çıkar`}>
-                        <Ionicons name="person-remove-outline" size={20} color="#F87171" />
-                      </TouchableOpacity>
+                      <>
+                        <TouchableOpacity onPress={() => handleResetPassword(member)} hitSlop={{ top: 10, bottom: 10, left: 6, right: 6 }} accessibilityLabel={`${member.name} için geçici şifre`}>
+                          <Ionicons name="key-outline" size={19} color="#FACC15" />
+                        </TouchableOpacity>
+                        <TouchableOpacity onPress={() => handleRemoveMember(member)} hitSlop={{ top: 10, bottom: 10, left: 6, right: 10 }} accessibilityLabel={`${member.name} gruptan çıkar`}>
+                          <Ionicons name="person-remove-outline" size={20} color="#F87171" />
+                        </TouchableOpacity>
+                      </>
                     )}
                   </View>
                 </View>

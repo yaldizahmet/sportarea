@@ -62,3 +62,13 @@ export function formatClock(ts: number) {
   const day = diff === 0 ? 'Bugün' : diff === 1 ? 'Yarın' : DAYS_SHORT[d.getDay()];
   return `${day} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
+
+// Para: 1400 -> "1.400 ₺"
+export function formatMoney(n?: number | null) {
+  if (!n) return '';
+  return `${String(Math.round(n)).replace(/\B(?=(\d{3})+(?!\d))/g, '.')}\u00A0₺`;
+}
+
+// Kişi başı saha payı (sunucudaki hesapla aynı: yukarı yuvarlanır)
+export const shareOf = (fee?: number | null, players?: number) =>
+  fee && players && players > 0 ? Math.ceil(fee / players) : null;

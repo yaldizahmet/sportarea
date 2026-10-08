@@ -2,7 +2,7 @@ import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';
 import { db, tx, initDB } from './db';
-import { randomUUID } from 'node:crypto';
+import { randomUUID, randomInt } from 'node:crypto';
 import path from 'node:path';
 import fs from 'node:fs';
 import jwt from 'jsonwebtoken';
@@ -40,7 +40,7 @@ app.use(express.json({ limit: '1mb' }));
 // Rate limiters for auth
 const authLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 10, // Limit each IP to 10 requests per windowMs
+  max: Number(process.env.AUTH_RATE_LIMIT) || 10, // IP başına 15 dakikada 10 deneme (testlerde artırılabilir)
   message: { error: 'Çok fazla deneme yaptınız, lütfen 15 dakika sonra tekrar deneyin.' }
 });
 
@@ -126,7 +126,7 @@ async function ensureUpcomingMatch(groupId: string): Promise<string | null> {
     await t.run('SELECT pg_advisory_xact_lock(hashtext(?))', [groupId]);
 
     const g = await t.get(
-      `SELECT id, name, "creatorId", "weeklyDay", "weeklyTime", "weeklyLocation", "weeklyMaxPlayers", "weeklyLockoutHours"
+      `SELECT id, name, "creatorId", "weeklyDay", "weeklyTime", "weeklyLocation", "weeklyMaxPlayers", "weeklyLockoutHours", "weeklyFee"
        FROM "Groups" WHERE id = ?`,
       [groupId]
     );
@@ -144,9 +144,9 @@ async function ensureUpcomingMatch(groupId: string): Promise<string | null> {
     const matchId = randomUUID();
     const maxPlayers = g.weeklyMaxPlayers || 14;
     await t.run(
-      `INSERT INTO "Matches" (id, "groupId", "creatorId", date, time, location, "maxPlayers", "matchTimestamp", "lockoutHours")
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [matchId, groupId, g.creatorId, next.label, g.weeklyTime, g.weeklyLocation, maxPlayers, next.ts, g.weeklyLockoutHours ?? 3]
+      `INSERT INTO "Matches" (id, "groupId", "creatorId", date, time, location, "maxPlayers", "matchTimestamp", "lockoutHours", "pitchFee")
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [matchId, groupId, g.creatorId, next.label, g.weeklyTime, g.weeklyLocation, maxPlayers, next.ts, g.weeklyLockoutHours ?? 3, g.weeklyFee ?? null]
     );
 
     const members = await t.all(
@@ -205,6 +205,18 @@ async function ensureUpcomingMatchesForUser(userId: string) {
 }
 
 const isUniqueViolation = (err: any) => err && err.code === '23505';
+
+// Saha ücreti (₺, tam sayı). Boş / 0 = ücret yok (null). Geçersizse undefined.
+const parseFee = (v: any): number | null | undefined => {
+  if (v === undefined || v === null || v === '') return null;
+  const n = Number(v);
+  if (!Number.isInteger(n) || n < 0 || n > 100000) return undefined;
+  return n === 0 ? null : n;
+};
+
+// Kişi başı pay: ücret / sahada oynayan (ACTIVE) kişi sayısı, yukarı yuvarlanır.
+const sharePerPerson = (fee: number | null, players: number) =>
+  fee && players > 0 ? Math.ceil(fee / players) : null;
 
 // Uygulamanın web sürümü (iPhone'u olanlar ve uygulamayı indirmek istemeyenler için).
 // mobile klasöründen `npm run build:web` ile server/public içine üretilir.
@@ -297,6 +309,25 @@ app.post('/api/login', authLimiter, async (req, res) => {
   } catch (error) {
     console.error("Login Error:", error);
     res.status(500).json({ error: 'Giriş yaparken bir hata oluştu.' });
+  }
+});
+
+// Şifre değiştir. Geçici şifreyle girenden mevcut şifre istenmez.
+app.post('/api/me/password', async (req, res) => {
+  try {
+    const user = await db.get('SELECT id, password, "mustChangePassword" FROM "User" WHERE id = ?', [req.user.id]);
+    if (!user) return res.status(404).json({ error: 'Kullanıcı bulunamadı.' });
+    const newPassword = String(req.body.newPassword ?? '');
+    if (newPassword.length < 6) return res.status(400).json({ error: 'Yeni şifre en az 6 karakter olmalı.' });
+    if (!user.mustChangePassword) {
+      const ok = await bcrypt.compare(String(req.body.currentPassword ?? ''), user.password);
+      if (!ok) return res.status(400).json({ error: 'Mevcut şifre hatalı.' });
+    }
+    const hash = await bcrypt.hash(newPassword, BCRYPT_SALT_ROUNDS);
+    await db.run('UPDATE "User" SET password = ?, "mustChangePassword" = false WHERE id = ?', [hash, user.id]);
+    res.json({ message: 'Şifren güncellendi.' });
+  } catch (e) {
+    res.status(500).json({ error: 'Şifre güncellenemedi.' });
   }
 });
 
@@ -448,7 +479,7 @@ app.put('/api/groups/:id/schedule', async (req, res) => {
 
     if (req.body.enabled === false) {
       await db.run(
-        `UPDATE "Groups" SET "weeklyDay" = NULL, "weeklyTime" = NULL, "weeklyLocation" = NULL, "weeklyMaxPlayers" = NULL, "weeklyLockoutHours" = NULL WHERE id = ?`,
+        `UPDATE "Groups" SET "weeklyDay" = NULL, "weeklyTime" = NULL, "weeklyLocation" = NULL, "weeklyMaxPlayers" = NULL, "weeklyLockoutHours" = NULL, "weeklyFee" = NULL WHERE id = ?`,
         [id]
       );
       return res.json({ message: 'Haftalık maç kapatıldı. Açık olan maç yerinde kalır.' });
@@ -464,10 +495,12 @@ app.put('/api/groups/:id/schedule', async (req, res) => {
     if (!location) return res.status(400).json({ error: 'Saha adı gerekli.' });
     if (!Number.isInteger(maxPlayers) || maxPlayers < 2 || maxPlayers > 40) return res.status(400).json({ error: 'Kontenjan 2 ile 40 arasında olmalı.' });
     if (!Number.isInteger(lockoutHours) || lockoutHours < 0 || lockoutHours > 48) return res.status(400).json({ error: 'Kilit süresi 0 ile 48 saat arasında olmalı.' });
+    const fee = parseFee(req.body.fee);
+    if (fee === undefined) return res.status(400).json({ error: 'Saha ücreti 0 ile 100.000 ₺ arasında bir tam sayı olmalı.' });
 
     await db.run(
-      `UPDATE "Groups" SET "weeklyDay" = ?, "weeklyTime" = ?, "weeklyLocation" = ?, "weeklyMaxPlayers" = ?, "weeklyLockoutHours" = ? WHERE id = ?`,
-      [day, time, location, maxPlayers, lockoutHours, id]
+      `UPDATE "Groups" SET "weeklyDay" = ?, "weeklyTime" = ?, "weeklyLocation" = ?, "weeklyMaxPlayers" = ?, "weeklyLockoutHours" = ?, "weeklyFee" = ? WHERE id = ?`,
+      [day, time, location, maxPlayers, lockoutHours, fee, id]
     );
     const created = await ensureUpcomingMatch(id);
     res.json({
@@ -559,6 +592,29 @@ app.post('/api/groups/:id/leave', async (req, res) => {
   } catch (e) {
     console.error('Leave group error:', e);
     res.status(500).json({ error: 'Gruptan ayrılırken hata oluştu.' });
+  }
+});
+
+// Şifresini unutan üyeye kurucu geçici şifre verir. Üye bununla girince yeni şifre belirlemek zorunda.
+const TEMP_WORDS = ['saha', 'gol', 'pas', 'kale', 'forvet', 'top', 'korner', 'penalti'];
+app.post('/api/groups/:id/members/:userId/reset-password', async (req, res) => {
+  try {
+    const { id, userId } = req.params;
+    const group = await db.get('SELECT "creatorId" FROM "Groups" WHERE id = ?', [id]);
+    if (!group) return res.status(404).json({ error: 'Grup bulunamadı.' });
+    if (group.creatorId !== req.user.id) return res.status(403).json({ error: 'Geçici şifreyi sadece grubu kuran kişi verebilir.' });
+    if (userId === req.user.id) return res.status(400).json({ error: 'Kendi şifreni profil sayfasından değiştirebilirsin.' });
+    if (!(await isGroupMember(id, userId))) return res.status(404).json({ error: 'Bu kişi grupta değil.' });
+
+    const word = TEMP_WORDS[randomInt(TEMP_WORDS.length)];
+    const tempPassword = `${word}-${String(randomInt(10000)).padStart(4, '0')}`;
+    const hash = await bcrypt.hash(tempPassword, BCRYPT_SALT_ROUNDS);
+    await db.run('UPDATE "User" SET password = ?, "mustChangePassword" = true WHERE id = ?', [hash, userId]);
+    const u = await db.get('SELECT name, email FROM "User" WHERE id = ?', [userId]);
+    res.json({ tempPassword, name: u?.name, email: u?.email });
+  } catch (e) {
+    console.error('Reset password error:', e);
+    res.status(500).json({ error: 'Geçici şifre oluşturulamadı.' });
   }
 });
 
@@ -868,7 +924,8 @@ const MATCH_LIST_EXTRAS = `
     (SELECT CASE r.response WHEN 'NO' THEN 'DECLINED' ELSE 'MAYBE' END
        FROM "MatchResponses" r WHERE r."matchId" = m.id AND r."userId" = ?)
   ) AS "myStatus",
-  (SELECT COUNT(*) FROM "MatchPlayers" mp WHERE mp."matchId" = m.id AND mp.status = 'ACTIVE') AS "activeCount"
+  (SELECT COUNT(*) FROM "MatchPlayers" mp WHERE mp."matchId" = m.id AND mp.status = 'ACTIVE') AS "activeCount",
+  (SELECT mp.paid FROM "MatchPlayers" mp WHERE mp."matchId" = m.id AND mp."userId" = ?) AS "myPaid"
 `;
 
 // Maçlar sadece gruplar üzerinden görünür (herkese açık "Keşfet" listesi kaldırıldı).
@@ -887,7 +944,7 @@ app.get('/api/matches', async (req, res) => {
       WHERE EXISTS (SELECT 1 FROM "MatchPlayers" mp WHERE mp."matchId" = m.id AND mp."userId" = ?)
          OR EXISTS (SELECT 1 FROM "GroupMembers" gm WHERE gm."groupId" = m."groupId" AND gm."userId" = ?)
       ORDER BY m."matchTimestamp" ASC
-    `, [userId, userId, userId, userId]);
+    `, [userId, userId, userId, userId, userId]);
     res.json(matches);
   } catch (error) {
     console.error('List matches error:', error);
@@ -899,6 +956,8 @@ app.post('/api/matches', async (req, res) => {
   try {
     const { groupId, date, time, location, maxPlayers, teamAName, teamBName, matchTimestamp, lockoutHours } = req.body;
     const creatorId = req.user.id;
+    const pitchFee = parseFee(req.body.pitchFee);
+    if (pitchFee === undefined) return res.status(400).json({ error: 'Saha ücreti 0 ile 100.000 ₺ arasında bir tam sayı olmalı.' });
     if (!date || !time || !location || !(Number(maxPlayers) > 0)) {
       return res.status(400).json({ error: 'Tarih, saat, yer ve kontenjan gerekli.' });
     }
@@ -909,9 +968,9 @@ app.post('/api/matches', async (req, res) => {
 
     await tx(async (t) => {
       await t.run(
-        `INSERT INTO "Matches" (id, "groupId", "creatorId", date, time, location, "maxPlayers", "teamAName", "teamBName", "matchTimestamp", "lockoutHours")
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [id, groupId, creatorId, date, time, location, Number(maxPlayers), teamAName || 'A Takımı', teamBName || 'B Takımı', Number(matchTimestamp) || 0, lockoutHours ?? 3]
+        `INSERT INTO "Matches" (id, "groupId", "creatorId", date, time, location, "maxPlayers", "teamAName", "teamBName", "matchTimestamp", "lockoutHours", "pitchFee")
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [id, groupId, creatorId, date, time, location, Number(maxPlayers), teamAName || 'A Takımı', teamBName || 'B Takımı', Number(matchTimestamp) || 0, lockoutHours ?? 3, pitchFee]
       );
 
       await t.run('INSERT INTO "MatchPlayers" ("matchId", "userId") VALUES (?, ?)', [id, creatorId]);
@@ -979,7 +1038,7 @@ app.get('/api/matches/:id/players', async (req, res) => {
   try {
     const { id } = req.params;
     const players: any[] = await db.all(`
-      SELECT u.id, u.name, u.avatar, u.position, mp.team, mp.goals, mp.status
+      SELECT u.id, u.name, u.avatar, u.position, mp.team, mp.goals, mp.status, mp.paid
       FROM "MatchPlayers" mp
       JOIN "User" u ON mp."userId" = u.id
       WHERE mp."matchId" = ?
@@ -1274,6 +1333,42 @@ app.post('/api/matches/:id/save-teams', async (req, res) => {
   }
 });
 
+// SAHA ÜCRETİ
+// Maçı yöneten kişi ücreti girer / değiştirir (boş ya da 0 = ücret yok).
+app.put('/api/matches/:id/fee', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const perm = await canManageMatch(id, req.user.id);
+    if (!perm.exists) return res.status(404).json({ error: 'Maç bulunamadı.' });
+    if (!perm.allowed) return res.status(403).json({ error: 'Saha ücretini sadece maçı kuran kişi girebilir.' });
+    const fee = parseFee(req.body.fee);
+    if (fee === undefined) return res.status(400).json({ error: 'Saha ücreti 0 ile 100.000 ₺ arasında bir tam sayı olmalı.' });
+    await db.run('UPDATE "Matches" SET "pitchFee" = ? WHERE id = ?', [fee, id]);
+    res.json({ message: fee ? 'Saha ücreti kaydedildi.' : 'Saha ücreti kaldırıldı.', pitchFee: fee });
+  } catch (e) {
+    res.status(500).json({ error: 'Saha ücreti kaydedilemedi.' });
+  }
+});
+
+// Maçı yöneten kişi bir oyuncunun payını ödedi / ödemedi olarak işaretler.
+app.post('/api/matches/:id/paid', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const perm = await canManageMatch(id, req.user.id);
+    if (!perm.exists) return res.status(404).json({ error: 'Maç bulunamadı.' });
+    if (!perm.allowed) return res.status(403).json({ error: 'Ödemeleri sadece maçı kuran kişi işaretleyebilir.' });
+    const userId = String(req.body.userId ?? '');
+    const r = await db.run(
+      `UPDATE "MatchPlayers" SET paid = ? WHERE "matchId" = ? AND "userId" = ? AND status = 'ACTIVE'`,
+      [Boolean(req.body.paid), id, userId]
+    );
+    if (r.changes === 0) return res.status(404).json({ error: 'Bu kişi bu maçta oynamıyor.' });
+    res.json({ message: 'Kaydedildi.' });
+  } catch (e) {
+    res.status(500).json({ error: 'Kaydedilemedi.' });
+  }
+});
+
 app.post('/api/matches/:id/finish', async (req, res) => {
   try {
     const { id } = req.params;
@@ -1305,10 +1400,14 @@ app.post('/api/matches/:id/finish', async (req, res) => {
 
     // Sadece sahada oynayanlara: MVP oyu ve puanlama hatırlatması
     const played = await db.all(`SELECT "userId" FROM "MatchPlayers" WHERE "matchId" = ? AND status = 'ACTIVE' AND "userId" <> ?`, [id, req.user.id]);
+    const feeRow = await db.get(`SELECT "pitchFee", (SELECT COUNT(*) FROM "MatchPlayers" WHERE "matchId" = ? AND status = 'ACTIVE') AS n FROM "Matches" WHERE id = ?`, [id, id]);
+    const share = sharePerPerson(feeRow?.pitchFee ?? null, feeRow?.n ?? 0);
     sendPushInBackground(played.map((p: any) => ({
       userId: p.userId,
       title: score ? `Maç bitti: ${score}` : 'Maç bitti',
-      body: 'MVP oyunu ver, takım arkadaşlarını puanla.',
+      body: share
+        ? `Saha payın: ${share} ₺. MVP oyunu ver, takım arkadaşlarını puanla.`
+        : 'MVP oyunu ver, takım arkadaşlarını puanla.',
       data: { matchId: id },
     })));
 

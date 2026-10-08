@@ -149,9 +149,7 @@ alter table sportarea."MatchResponses" enable row level security;
 create policy server_all on sportarea."MatchResponses" for all to sportarea_app using (true) with check (true);
 
 -- v3: Haftalık maç kolonları (Groups.weekly*) ve GroupMembers."alwaysIn" yukarıdaki tanımlara eklendi.
--- Sohbet ve müsaitlik özellikleri kaldırıldı. Canlı veritabanında boş "MatchMessages", "GroupMessages"
--- ve "UserAvailability" tabloları hâlâ duruyor; kod artık bunları kullanmıyor, istenirse silinebilir:
---   drop table sportarea."MatchMessages", sportarea."GroupMessages", sportarea."UserAvailability";
+-- Sohbet ve müsaitlik özellikleri kaldırıldı; eski boş tablolar canlı veritabanından da silindi.
 
 -- v4: Push bildirimleri ve zamanlayıcı
 -- Her telefonun Expo push token'ı. Aynı telefon başka hesaba geçerse token o hesaba taşınır.
@@ -192,4 +190,18 @@ create policy server_read on sportarea."AppConfig" for select to sportarea_app u
 --                    'x-cron-secret', (select value from sportarea."AppConfig" where key = 'cron_secret')),
 --       body := '{}'::jsonb,
 --       timeout_milliseconds := 90000)
+--   $$);
+
+-- v5: Şifre sıfırlama ve saha ücreti
+-- Kurucunun verdiği geçici şifreyle giren üye yeni şifre belirlemek zorunda.
+alter table sportarea."User" add column "mustChangePassword" boolean not null default false;
+-- Saha ücreti (₺). Kişi başı pay = ücret / sahada oynayan kişi sayısı.
+alter table sportarea."Matches" add column "pitchFee" integer check ("pitchFee" > 0);
+alter table sportarea."MatchPlayers" add column paid boolean not null default false;
+-- Haftalık maçlara otomatik yazılan varsayılan ücret.
+alter table sportarea."Groups" add column "weeklyFee" integer check ("weeklyFee" > 0);
+
+-- Sunucu uykuya geçmesin: Supabase'de 10 dakikada bir sağlık kontrolü (Render ücretsiz plan 15 dk'da uyur).
+--   select cron.schedule('sportarea-keepalive', '*/10 * * * *', $$
+--     select net.http_get(url := 'https://sportarea.onrender.com/api/health', timeout_milliseconds := 60000)
 --   $$);

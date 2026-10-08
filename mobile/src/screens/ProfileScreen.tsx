@@ -21,6 +21,7 @@ import { StatusBar } from 'expo-status-bar';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { API_URL } from '../config/api';
 import { unregisterPush } from '../utils/push';
+import ChangePasswordModal from '../components/ChangePasswordModal';
 
 export default function ProfileScreen({ navigation, route }: any) {
   const user = route.params?.user || { name: 'Oyuncu', id: '' };
@@ -37,6 +38,7 @@ export default function ProfileScreen({ navigation, route }: any) {
   const [avatarSaving, setAvatarSaving] = useState(false);
 
   const [isPositionModalVisible, setPositionModalVisible] = useState(false);
+  const [passwordModal, setPasswordModal] = useState(false);
   const POSITIONS = ['Kaleci', 'Defans - Stoper', 'Defans - Bek', 'Orta Saha - Ön Libero', 'Orta Saha - 8 Numara', 'Orta Saha - 10 Numara', 'Forvet - Kanat', 'Forvet - Santrafor'];
 
   useEffect(() => {
@@ -256,6 +258,11 @@ export default function ProfileScreen({ navigation, route }: any) {
           <Ionicons name="camera-outline" size={20} color="#FFFFFF" style={{marginLeft: 10}} />
         </TouchableOpacity>
 
+        <TouchableOpacity style={[styles.editProfileButton, { marginTop: 12 }]} onPress={() => setPasswordModal(true)}>
+          <Text style={styles.editProfileText}>Şifre Değiştir</Text>
+          <Ionicons name="key-outline" size={20} color="#FFFFFF" style={{marginLeft: 10}} />
+        </TouchableOpacity>
+
         <View style={{height: 50}} />
       </ScrollView>
 
@@ -278,6 +285,7 @@ export default function ProfileScreen({ navigation, route }: any) {
         </View>
       </Modal>
 
+      <ChangePasswordModal visible={passwordModal} onDone={() => setPasswordModal(false)} onCancel={() => setPasswordModal(false)} />
     </SafeAreaView>
   );
 }
