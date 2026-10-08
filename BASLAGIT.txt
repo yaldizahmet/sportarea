@@ -16,7 +16,6 @@ Uygulama (telefon ve web) her zaman canlı sunucuya bağlanır; bilgisayarda sun
 PowerShell'i aç, proje klasörüne git:
 
   cd C:\Users\user\Documents\sporarea
-  npm install
   npm run install:all
 
 "npm" tanınmıyorsa: Node.js 20 veya 22 LTS kur (https://nodejs.org).
@@ -86,5 +85,3 @@ SORUN ÇIKARSA
   ilk açılış 30-60 saniye sürebilir. Bekleyip tekrar dene.
 - Render'da yükleme "Failed" ise: Render > Logs'taki son satırlara bak
   (çoğunlukla eksik JWT_SECRET / DATABASE_URL).
-- Not: TELEFON.txt, IP-GUNCELLE.ps1, MOBI-WEB.ps1 eski yerel kurulum içindir;
-  uygulama artık doğrudan canlı sunucuya bağlandığı için gerekmiyorlar.

@@ -9,7 +9,7 @@ COPY server/package*.json ./server/
 # Install server dependencies
 RUN cd server && npm install
 
-# Copy server source code and database
+# Copy server source code (and the built web app in server/public)
 COPY server/ ./server/
 
 # Compile TypeScript to JavaScript
