@@ -105,6 +105,7 @@ export default function MatchDetailsScreen({ route, navigation }: any) {
   // MVP
   const [mvpModalVisible, setMvpModalVisible] = useState(false);
   const [matchMvp, setMatchMvp] = useState<any>(null);
+  const [myMvpVote, setMyMvpVote] = useState<any>(null);
 
   // Weather
   const [weather, setWeather] = useState<{temp: number, icon: string, desc: string} | null>(null);
@@ -187,6 +188,7 @@ export default function MatchDetailsScreen({ route, navigation }: any) {
       const res = await apiFetch(`${API_URL}/matches/${matchInfo.id}/mvp`);
       const data = await res.json();
       if (data.mvp) setMatchMvp(data.mvp);
+      setMyMvpVote(data.myVote ?? null);
     } catch(e) {}
   };
 
@@ -650,9 +652,13 @@ export default function MatchDetailsScreen({ route, navigation }: any) {
             )}
             {iPlayed ? (
               <>
-                <TouchableOpacity style={styles.mvpBtn} onPress={() => setMvpModalVisible(true)} activeOpacity={0.85}>
-                  <Text style={styles.mvpBtnText}>MVP'ye oy ver</Text>
-                </TouchableOpacity>
+                {myMvpVote ? (
+                  <Text style={styles.mvpMine}>✓ Oyun: {String(myMvpVote.name)}</Text>
+                ) : (
+                  <TouchableOpacity style={styles.mvpBtn} onPress={() => setMvpModalVisible(true)} activeOpacity={0.85}>
+                    <Text style={styles.mvpBtnText}>MVP'ye oy ver</Text>
+                  </TouchableOpacity>
+                )}
                 <Text style={styles.mvpHint}>Takım arkadaşlarını puanlamak için aşağıda isimlerine dokun.</Text>
               </>
             ) : (
@@ -1137,6 +1143,7 @@ const styles = StyleSheet.create({
   mvpVotes: { color: '#FFD700', fontSize: 14, fontWeight: '600' },
   mvpEmpty: { color: '#94A3B8', fontSize: 14, marginTop: 6 },
   mvpBtn: { backgroundColor: '#FFD700', borderRadius: 12, paddingVertical: 12, paddingHorizontal: 24, marginTop: 12 },
+  mvpMine: { color: '#FFD700', fontWeight: '600', fontSize: 14, marginTop: 12 },
   mvpBtnText: { color: '#0F172A', fontWeight: 'bold', fontSize: 15 },
   mvpHint: { color: '#94A3B8', fontSize: 12, marginTop: 10, textAlign: 'center' },
   locationCard: { flexDirection: "row", alignItems: "center", backgroundColor: "#1E293B", borderRadius: 16, padding: 16, marginTop: 12, marginBottom: 20, borderWidth: 1, borderColor: "rgba(0, 230, 118, 0.2)" },

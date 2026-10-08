@@ -11,6 +11,8 @@ import {
   Image,
   Modal,
   ActivityIndicator,
+  TextInput,
+  Linking,
 } from 'react-native';
 import * as ImagePicker from 'expo-image-picker';
 import { ImageManipulator, SaveFormat } from 'expo-image-manipulator';
@@ -39,6 +41,39 @@ export default function ProfileScreen({ navigation, route }: any) {
 
   const [isPositionModalVisible, setPositionModalVisible] = useState(false);
   const [passwordModal, setPasswordModal] = useState(false);
+  const [deleteModal, setDeleteModal] = useState(false);
+  const [deletePassword, setDeletePassword] = useState('');
+  const [deleting, setDeleting] = useState(false);
+
+  // Hesap silme: şifreyle onaylanır, tüm veriler sunucudan kalıcı olarak silinir.
+  const handleDeleteAccount = async () => {
+    if (!deletePassword) {
+      notify('Şifre gerekli', 'Onaylamak için şifreni yaz.');
+      return;
+    }
+    setDeleting(true);
+    try {
+      const res = await apiFetch(`${API_URL}/me`, {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ password: deletePassword }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        notify('Olmadı', data.error || 'Hesap silinemedi.');
+        setDeleting(false);
+        return;
+      }
+      await AsyncStorage.removeItem('userToken');
+      await AsyncStorage.removeItem('pushToken');
+      setDeleteModal(false);
+      notify('Hesabın silindi', 'Tüm verilerin kalıcı olarak silindi. Görüşmek üzere!');
+      navigation.reset({ index: 0, routes: [{ name: 'Auth' }] });
+    } catch (e) {
+      notify('Hata', 'Bağlantı sorunu yaşandı.');
+    }
+    setDeleting(false);
+  };
   const POSITIONS = ['Kaleci', 'Defans - Stoper', 'Defans - Bek', 'Orta Saha - Ön Libero', 'Orta Saha - 8 Numara', 'Orta Saha - 10 Numara', 'Forvet - Kanat', 'Forvet - Santrafor'];
 
   useEffect(() => {
@@ -263,6 +298,15 @@ export default function ProfileScreen({ navigation, route }: any) {
           <Ionicons name="key-outline" size={20} color="#FFFFFF" style={{marginLeft: 10}} />
         </TouchableOpacity>
 
+        <TouchableOpacity style={styles.deleteAccountButton} onPress={() => { setDeletePassword(''); setDeleteModal(true); }}>
+          <Ionicons name="trash-outline" size={18} color="#F87171" style={{ marginRight: 8 }} />
+          <Text style={styles.deleteAccountText}>Hesabımı Sil</Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity onPress={() => Linking.openURL('https://sportarea.onrender.com/gizlilik')} style={{ alignItems: 'center', marginTop: 18 }}>
+          <Text style={{ color: '#64748B', fontSize: 13, textDecorationLine: 'underline' }}>Gizlilik Politikası</Text>
+        </TouchableOpacity>
+
         <View style={{height: 50}} />
       </ScrollView>
 
@@ -286,11 +330,46 @@ export default function ProfileScreen({ navigation, route }: any) {
       </Modal>
 
       <ChangePasswordModal visible={passwordModal} onDone={() => setPasswordModal(false)} onCancel={() => setPasswordModal(false)} />
+
+      {/* HESAP SİLME */}
+      <Modal visible={deleteModal} transparent animationType="slide" onRequestClose={() => setDeleteModal(false)}>
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContent}>
+            <Text style={[styles.modalTitle, { color: '#F87171' }]}>Hesabını sil</Text>
+            <Text style={styles.deleteInfo}>
+              Adın, e-postan, fotoğrafın, grup üyeliklerin, maç cevapların, gollerin, puanların ve oyların kalıcı olarak silinir. Bu işlem geri alınamaz.
+            </Text>
+            <Text style={styles.deleteInfo}>
+              Kurduğun bir grup varsa yöneticilik en eski üyeye geçer; grupta başka kimse yoksa grup da silinir.
+            </Text>
+            <TextInput
+              style={styles.deleteInput}
+              placeholder="Onaylamak için şifren"
+              placeholderTextColor="#64748B"
+              secureTextEntry
+              value={deletePassword}
+              onChangeText={setDeletePassword}
+            />
+            <TouchableOpacity style={styles.deleteConfirm} onPress={handleDeleteAccount} disabled={deleting}>
+              {deleting ? <ActivityIndicator color="#0F172A" /> : <Text style={styles.deleteConfirmText}>Hesabımı kalıcı olarak sil</Text>}
+            </TouchableOpacity>
+            <TouchableOpacity style={styles.cancelBtn} onPress={() => setDeleteModal(false)}>
+              <Text style={styles.cancelBtnText}>Vazgeç</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
+  deleteAccountButton: { flexDirection: 'row', justifyContent: 'center', alignItems: 'center', marginTop: 28, paddingVertical: 14, borderRadius: 14, borderWidth: 1, borderColor: 'rgba(248, 113, 113, 0.4)' },
+  deleteAccountText: { color: '#F87171', fontSize: 15, fontWeight: 'bold' },
+  deleteInfo: { color: '#CBD5E1', fontSize: 14, lineHeight: 20, marginBottom: 10 },
+  deleteInput: { backgroundColor: 'rgba(0,0,0,0.25)', color: '#FFFFFF', borderRadius: 12, paddingHorizontal: 14, paddingVertical: 14, fontSize: 16, borderWidth: 1, borderColor: 'rgba(255,255,255,0.08)', marginTop: 6, marginBottom: 14 },
+  deleteConfirm: { backgroundColor: '#F87171', borderRadius: 14, paddingVertical: 15, alignItems: 'center' },
+  deleteConfirmText: { color: '#0F172A', fontWeight: 'bold', fontSize: 16 },
   safeArea: { flex: 1, backgroundColor: '#0F172A' },
   header: {
     flexDirection: 'row',

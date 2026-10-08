@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Gizlilik Politikası · SporArea</title>
+  <meta name="description" content="SporArea uygulamasının gizlilik politikası: hangi verileri topladığımız, neden ve nasıl sildirebileceğin." />
+  <link rel="icon" href="/favicon.ico" />
+  <style>
+    :root { --bg: #0F172A; --card: #1E293B; --text: #E2E8F0; --muted: #94A3B8; --green: #00E676; --line: rgba(255,255,255,0.08); }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: var(--bg); color: var(--text); font: 16px/1.65 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+    main { max-width: 760px; margin: 0 auto; padding: 32px 20px 64px; }
+    header { display: flex; align-items: center; gap: 12px; margin-bottom: 8px; }
+    header .logo { width: 44px; height: 44px; border-radius: 12px; }
+    header b { font-size: 20px; color: #fff; }
+    h1 { font-size: 30px; line-height: 1.2; color: #fff; margin: 20px 0 4px; }
+    .updated { color: var(--muted); font-size: 14px; margin: 0 0 24px; }
+    h2 { font-size: 19px; color: #fff; margin: 32px 0 8px; padding-top: 16px; border-top: 1px solid var(--line); }
+    p, li { color: var(--text); }
+    ul { padding-left: 22px; margin: 8px 0; }
+    li { margin: 4px 0; }
+    .card { background: var(--card); border: 1px solid var(--line); border-radius: 16px; padding: 16px 18px; margin: 16px 0; }
+    .muted { color: var(--muted); }
+    a { color: var(--green); }
+    table { width: 100%; border-collapse: collapse; font-size: 15px; margin: 8px 0; }
+    th, td { text-align: left; padding: 10px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
+    th { color: var(--muted); font-weight: 600; }
+    @media (max-width: 480px) { h1 { font-size: 25px; } table { font-size: 14px; } }
+  </style>
+</head>
+<body>
+<main>
+  <header>
+    <img class="logo" src="/apple-touch-icon.png" alt="" />
+    <b>SporArea</b>
+  </header>
+
+  <h1>Gizlilik Politikası</h1>
+  <p class="updated">Son güncelleme: 8 Ekim 2026</p>
+
+  <div class="card">
+    <b>Kısaca:</b> SporArea, arkadaş gruplarının halı saha maçlarını ayarlaması için yapılmış bir uygulama.
+    Sadece uygulamanın çalışması için gereken bilgileri tutuyoruz. Reklam göstermiyoruz, verini satmıyor ya da
+    reklam amacıyla kimseyle paylaşmıyoruz. Hesabını istediğin an tüm verilerinle birlikte silebilirsin.
+  </div>
+
+  <h2>Hangi bilgileri topluyoruz?</h2>
+  <table>
+    <tr><th>Bilgi</th><th>Neden</th></tr>
+    <tr><td>Ad soyad</td><td>Grup arkadaşlarının seni kadroda ve listelerde tanıyabilmesi için.</td></tr>
+    <tr><td>E-posta adresi</td><td>Hesabına giriş yapabilmen için. Başka kullanıcılara gösterilmez.</td></tr>
+    <tr><td>Şifre</td><td>Giriş için. Açık hâliyle saklanmaz; geri çevrilemeyen şekilde şifrelenmiş (bcrypt) olarak tutulur.</td></tr>
+    <tr><td>Profil fotoğrafı (isteğe bağlı)</td><td>Galeriden seçersen küçültülmüş bir kopyası saklanır ve grup arkadaşlarına gösterilir.</td></tr>
+    <tr><td>Mevki</td><td>Profilinde ve takım dengelemede kullanılır.</td></tr>
+    <tr><td>Grup ve maç bilgileri</td><td>Üyesi olduğun gruplar, maçlara verdiğin cevaplar (Varım / Belki / Yokum), goller, skorlar, takım arkadaşlarına verdiğin ve aldığın puanlar, MVP oyları.</td></tr>
+    <tr><td>Saha ücreti ödeme durumu</td><td>Grup yöneticisinin senin payını "ödedi / ödemedi" olarak işaretlemesi. Uygulama üzerinden para işlemi yapılmaz; kart ya da banka bilgisi toplanmaz.</td></tr>
+    <tr><td>Bildirim kimliği</td><td>Telefonuna maç bildirimi gönderebilmek için cihazına özel bir kimlik (push token).</td></tr>
+  </table>
+  <p class="muted">Konum, rehber, kamera, mikrofon ya da reklam kimliği toplanmaz.</p>
+
+  <h2>Bilgilerini kimler görür?</h2>
+  <ul>
+    <li><b>Grup arkadaşların:</b> adını, fotoğrafını, mevkini, maç cevaplarını, istatistiklerini (maç, gol, MVP, puan ortalaması) ve saha ücreti ödeme durumunu görür. E-postanı görmez.</li>
+    <li><b>Grup yöneticisi:</b> şifreni unuttuğunda sana geçici şifre verebilir. Bu sırada e-posta adresini görür ki geçici şifreyle hangi adresle gireceğini sana iletebilsin.</li>
+    <li><b>Hizmet sağlayıcılar:</b> Uygulamanın çalışması için şu servisleri kullanıyoruz; verini sadece bu iş için işlerler:
+      <ul>
+        <li>Supabase — veritabanı (sunucuları Avrupa Birliği'nde, İrlanda'da)</li>
+        <li>Render — uygulama sunucusu</li>
+        <li>Expo ve Google Firebase — telefonuna bildirim iletmek için</li>
+        <li>Open-Meteo — maç günü hava durumu için; yalnızca saha adı gönderilir, senin bilgin gönderilmez</li>
+      </ul>
+    </li>
+  </ul>
+  <p>Bilgilerini bunların dışında kimseyle paylaşmıyor, satmıyoruz. Yasal bir zorunluluk olursa yetkili makamlarla paylaşılabilir.</p>
+
+  <h2>Ne kadar süre saklıyoruz?</h2>
+  <p>Hesabın açık olduğu sürece. Hesabını sildiğinde adın, e-postan, şifren, fotoğrafın, maç cevapların, gollerin, puanların, oyların, bildirimlerin ve cihaz kayıtların hemen ve kalıcı olarak silinir. Grup arkadaşlarının kendi verileri (ör. maçın skoru) kalır, ancak seninle ilişkisi kalmaz.</p>
+
+  <h2>Hesabını nasıl silersin?</h2>
+  <ul>
+    <li><b>Uygulamadan:</b> Profil → Hesabımı Sil</li>
+    <li><b>Web'den:</b> <a href="/hesap-sil">sportarea.onrender.com/hesap-sil</a> sayfasında e-posta ve şifrenle</li>
+  </ul>
+  <p>Bir grubu sen kurduysan grubun yöneticiliği en eski üyeye geçer; grupta senden başka kimse yoksa grup da silinir.</p>
+
+  <h2>Güvenlik</h2>
+  <p>Uygulama ile sunucu arasındaki tüm iletişim şifreli (HTTPS) bağlantı üzerinden yapılır. Şifreler geri çevrilemeyen şekilde saklanır. Veritabanına sadece uygulama sunucusu erişebilir.</p>
+
+  <h2>Hakların</h2>
+  <p>6698 sayılı Kişisel Verilerin Korunması Kanunu (KVKK) kapsamında verilerinin işlenip işlenmediğini öğrenme, düzeltilmesini ya da silinmesini isteme hakkın var. Adını, fotoğrafını ve mevkini profilinden kendin değiştirebilir, hesabını yukarıdaki yollarla kendin silebilirsin.</p>
+
+  <h2>Çocuklar</h2>
+  <p>SporArea 13 yaşından küçük çocuklara yönelik değildir ve bilerek onlardan bilgi toplamaz.</p>
+
+  <h2>Değişiklikler</h2>
+  <p>Bu politikayı güncellersek bu sayfadaki tarihi değiştiririz. Önemli değişikliklerde uygulama içinden de haber veririz.</p>
+
+  <!--IF_CONTACT-->
+  <h2>İletişim</h2>
+  <p>Sorular ve talepler için: <a href="mailto:{{CONTACT_EMAIL}}">{{CONTACT_EMAIL}}</a></p>
+  <!--END_IF_CONTACT-->
+</main>
+</body>
+</html>

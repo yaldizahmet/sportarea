@@ -7,11 +7,18 @@
     "scheme": "sporarea",
     "userInterfaceStyle": "dark",
     "android": {
-      "package": "com.thend.sporarea",
+      "package": "com.sporarea.app",
       "blockedPermissions": [
         "android.permission.CAMERA",
-        "android.permission.RECORD_AUDIO"
-      ]
+        "android.permission.RECORD_AUDIO",
+        "android.permission.READ_EXTERNAL_STORAGE",
+        "android.permission.WRITE_EXTERNAL_STORAGE",
+        "android.permission.SYSTEM_ALERT_WINDOW"
+      ],
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#0F172A"
+      }
     },
     "extra": {
       "eas": {
@@ -41,6 +48,15 @@
       "themeColor": "#0F172A",
       "backgroundColor": "#0F172A",
       "lang": "tr"
+    },
+    "icon": "./assets/icon.png",
+    "splash": {
+      "image": "./assets/splash-icon.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#0F172A"
+    },
+    "ios": {
+      "bundleIdentifier": "com.sporarea.app"
     }
   }
 }

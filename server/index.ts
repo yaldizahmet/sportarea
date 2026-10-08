@@ -218,6 +218,25 @@ const parseFee = (v: any): number | null | undefined => {
 const sharePerPerson = (fee: number | null, players: number) =>
   fee && players > 0 ? Math.ceil(fee / players) : null;
 
+// Yasal sayfalar (Google Play için): gizlilik politikası ve hesap silme. server/pages altında.
+const PAGES_DIR = path.join(__dirname, 'pages');
+const sendPage = (file: string) => async (req: any, res: any) => {
+  try {
+    let html = fs.readFileSync(path.join(PAGES_DIR, file), 'utf8');
+    // İletişim e-postası veritabanından (AppConfig.contact_email); yoksa ilgili satır gizlenir.
+    const cfg = await db.get(`SELECT value FROM "AppConfig" WHERE key = 'contact_email'`).catch(() => null);
+    const email = cfg?.value ? String(cfg.value).replace(/[<>"&]/g, '') : '';
+    html = html
+      .replace(/{{CONTACT_EMAIL}}/g, email)
+      .replace(/<!--IF_CONTACT-->([\s\S]*?)<!--END_IF_CONTACT-->/g, email ? '$1' : '');
+    res.type('html').send(html);
+  } catch (e) {
+    res.status(500).send('Sayfa yüklenemedi.');
+  }
+};
+app.get(['/gizlilik', '/privacy'], sendPage('gizlilik.html'));
+app.get(['/hesap-sil', '/delete-account'], sendPage('hesap-sil.html'));
+
 // Uygulamanın web sürümü (iPhone'u olanlar ve uygulamayı indirmek istemeyenler için).
 // mobile klasöründen `npm run build:web` ile server/public içine üretilir.
 const WEB_DIR = path.join(__dirname, 'public');
@@ -237,7 +256,7 @@ app.get('/api/health', (req, res) => {
 // Authentication Middleware
 const authenticateToken = (req: any, res: any, next: any) => {
   // /cron/tick kendi gizli anahtarıyla korunuyor (aşağıda).
-  if (req.path === '/login' || req.path === '/register' || req.path === '/me' || req.path === '/cron/tick' || req.path === '/health' || req.path.startsWith('/invite/')) {
+  if (req.path === '/login' || req.path === '/register' || (req.path === '/me' && req.method === 'GET') || req.path === '/cron/tick' || req.path === '/health' || req.path.startsWith('/invite/') || req.path === '/account/delete') {
     return next();
   }
   const token = req.headers.authorization?.split(' ')[1];
@@ -576,6 +595,70 @@ async function removeFromGroup(groupId: string, userId: string) {
   );
   await db.run('DELETE FROM "GroupMembers" WHERE "groupId" = ? AND "userId" = ?', [groupId, userId]);
 }
+
+// HESAP SİLME (Google Play şartı: uygulama içinden ve web sayfasından)
+// Kurduğu gruplarda yöneticilik en eski üyeye geçer; grupta başka kimse yoksa grup silinir.
+// Yaklaşan maçlardaki yeri boşalır (ilk yedek kadroya geçer). Sonra tüm kişisel verisi silinir
+// (oylar, puanlar, bildirimler, cihaz kayıtları veritabanı kuralıyla birlikte gider).
+async function deleteAccount(userId: string) {
+  const groups = await db.all(
+    `SELECT g.id, g.name, g."creatorId" FROM "Groups" g JOIN "GroupMembers" gm ON gm."groupId" = g.id WHERE gm."userId" = ?`,
+    [userId]
+  );
+  const pushes: PushMessage[] = [];
+  for (const g of groups) {
+    if (g.creatorId === userId) {
+      const heir = await db.get(
+        `SELECT "userId" FROM "GroupMembers" WHERE "groupId" = ? AND "userId" <> ? ORDER BY "joinedAt" ASC LIMIT 1`,
+        [g.id, userId]
+      );
+      if (!heir) {
+        await db.run('DELETE FROM "Groups" WHERE id = ?', [g.id]);
+        continue;
+      }
+      await db.run('UPDATE "Groups" SET "creatorId" = ? WHERE id = ?', [heir.userId, g.id]);
+      await db.run('INSERT INTO "Notifications" (id, "userId", message, type) VALUES (?, ?, ?, ?)', [
+        randomUUID(), heir.userId, `${g.name} grubunun kurucusu hesabını sildi; grubun yöneticisi artık sensin.`, 'INFO'
+      ]);
+      pushes.push({ userId: heir.userId, title: g.name, body: 'Grubun yöneticisi artık sensin.', data: {} });
+    }
+    await removeFromGroup(g.id, userId);
+  }
+  await db.run('DELETE FROM "User" WHERE id = ?', [userId]);
+  sendPushInBackground(pushes);
+}
+
+// Uygulama içinden: şifreyle onaylanır.
+app.delete('/api/me', async (req, res) => {
+  try {
+    const user = await db.get('SELECT id, password FROM "User" WHERE id = ?', [req.user.id]);
+    if (!user) return res.status(404).json({ error: 'Kullanıcı bulunamadı.' });
+    if (!(await bcrypt.compare(String(req.body?.password ?? ''), user.password))) {
+      return res.status(400).json({ error: 'Şifre hatalı.' });
+    }
+    await deleteAccount(user.id);
+    res.json({ message: 'Hesabın ve tüm verilerin silindi.' });
+  } catch (e) {
+    console.error('Delete account error:', e);
+    res.status(500).json({ error: 'Hesap silinemedi.' });
+  }
+});
+
+// Web sayfasından (uygulama yüklü değilse): e-posta + şifre ile.
+app.post('/api/account/delete', authLimiter, async (req, res) => {
+  try {
+    const email = String(req.body?.email ?? '').trim();
+    const user = await db.get('SELECT id, password FROM "User" WHERE lower(email) = lower(?)', [email]);
+    if (!user || !(await bcrypt.compare(String(req.body?.password ?? ''), user.password))) {
+      return res.status(401).json({ error: 'E-posta veya şifre hatalı.' });
+    }
+    await deleteAccount(user.id);
+    res.json({ message: 'Hesabın ve tüm verilerin silindi.' });
+  } catch (e) {
+    console.error('Delete account (web) error:', e);
+    res.status(500).json({ error: 'Hesap silinemedi.' });
+  }
+});
 
 // Gruptan ayrıl (kurucu ayrılamaz; grubu silebilir).
 app.post('/api/groups/:id/leave', async (req, res) => {
@@ -1444,7 +1527,11 @@ app.get('/api/matches/:id/mvp', async (req, res) => {
       ORDER BY "voteCount" DESC
       LIMIT 1
     `, [req.params.id]);
-    res.json({ mvp: top ?? null });
+    const mine = await db.get(`
+      SELECT u.id, u.name FROM "MvpVotes" v JOIN "User" u ON u.id = v."votedId"
+      WHERE v."matchId" = ? AND v."voterId" = ?
+    `, [req.params.id, req.user.id]);
+    res.json({ mvp: top ?? null, myVote: mine ?? null });
   } catch (error) {
     res.status(500).json({ error: 'MVP alınamadı.' });
   }
