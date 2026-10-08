@@ -936,6 +936,8 @@ app.delete('/api/push-token', async (req, res) => {
 const REMINDER_WINDOW_MS = 24 * 60 * 60 * 1000;
 
 async function runCronTick() {
+  // 0) Maçı silinmiş, hiçbir maçta kaydı kalmamış misafirleri temizle.
+  await db.run(`DELETE FROM "User" u WHERE u.role = 'GUEST' AND NOT EXISTS (SELECT 1 FROM "MatchPlayers" mp WHERE mp."userId" = u.id)`);
   // 1) Haftalık maçı olan her grupta sıradaki maç açık olsun (kimse uygulamayı açmasa da).
   const scheduled = await db.all(`SELECT id FROM "Groups" WHERE "weeklyDay" IS NOT NULL`);
   let opened = 0;
@@ -1121,9 +1123,11 @@ app.get('/api/matches/:id/players', async (req, res) => {
   try {
     const { id } = req.params;
     const players: any[] = await db.all(`
-      SELECT u.id, u.name, u.avatar, u.position, mp.team, mp.goals, mp.status, mp.paid
+      SELECT u.id, u.name, u.avatar, u.position, mp.team, mp.goals, mp.status, mp.paid,
+             (u.role = 'GUEST') AS "isGuest", mp."invitedBy", inv.name AS "invitedByName"
       FROM "MatchPlayers" mp
       JOIN "User" u ON mp."userId" = u.id
+      LEFT JOIN "User" inv ON inv.id = mp."invitedBy"
       WHERE mp."matchId" = ?
       ORDER BY mp."joinedAt" ASC
     `, [id]);
@@ -1168,6 +1172,33 @@ app.get('/api/matches/:id/players', async (req, res) => {
 //  MAYBE -> kadrodaysa çıkar, "Belki" olarak işaretlenir
 type MatchAnswer = 'YES' | 'NO' | 'MAYBE';
 type RespondResult = { status: number; body: any };
+
+// Kadrodan biri çıkınca ilk yedeği kadroya alır. Yedek bir misafirse haber onu getirene gider.
+async function promoteFirstReserve(t: any, matchId: string, matchRow: any, pushes: PushMessage[]) {
+  const first = await t.get(
+    `SELECT mp."userId", mp."invitedBy", u.name, u.role FROM "MatchPlayers" mp JOIN "User" u ON u.id = mp."userId"
+     WHERE mp."matchId" = ? AND mp.status = 'RESERVE' ORDER BY mp."joinedAt" ASC LIMIT 1`,
+    [matchId]
+  );
+  if (!first) return;
+  await t.run(`UPDATE "MatchPlayers" SET status = 'ACTIVE' WHERE "matchId" = ? AND "userId" = ?`, [matchId, first.userId]);
+  const when = friendlyMatchTime(Number(matchRow.matchTimestamp));
+  const isGuest = first.role === 'GUEST';
+  const to = isGuest ? first.invitedBy : first.userId;
+  if (!to) return;
+  const message = isGuest
+    ? `Misafirin ${first.name}, ${matchRow.location} maçında yedekten kadroya girdi.`
+    : `Müjde! ${matchRow.location} maçında bir kişilik yer açıldı ve yedeğe alındığın listede AS KADROYA yükseldin!`;
+  await t.run('INSERT INTO "Notifications" (id, "userId", message, type) VALUES (?, ?, ?, ?)', [randomUUID(), to, message, 'INFO']);
+  pushes.push({
+    userId: to,
+    title: isGuest ? 'Misafirin kadroya girdi ⚽' : 'Kadroya girdin! ⚽',
+    body: isGuest
+      ? `${when} · ${matchRow.location}: ${first.name} artık as kadroda.`
+      : `${when} · ${matchRow.location} maçında yer açıldı, artık as kadrodasın.`,
+    data: { matchId },
+  });
+}
 
 async function respondToMatch(matchId: string, userId: string, response: MatchAnswer): Promise<RespondResult> {
   const pushes: PushMessage[] = [];
@@ -1234,24 +1265,7 @@ async function respondToMatch(matchId: string, userId: string, response: MatchAn
       }
       await t.run('DELETE FROM "MatchPlayers" WHERE "matchId" = ? AND "userId" = ?', [matchId, userId]);
 
-      if (current.status === 'ACTIVE') {
-        const firstReserve = await t.get(`SELECT "userId" FROM "MatchPlayers" WHERE "matchId" = ? AND status = 'RESERVE' ORDER BY "joinedAt" ASC LIMIT 1`, [matchId]);
-        if (firstReserve) {
-          await t.run(`UPDATE "MatchPlayers" SET status = 'ACTIVE' WHERE "matchId" = ? AND "userId" = ?`, [matchId, firstReserve.userId]);
-          await t.run('INSERT INTO "Notifications" (id, "userId", message, type) VALUES (?, ?, ?, ?)', [
-            randomUUID(),
-            firstReserve.userId,
-            `Müjde! ${matchRow.location} maçında bir kişilik yer açıldı ve yedeğe alındığın listede AS KADROYA yükseldin!`,
-            'INFO'
-          ]);
-          pushes.push({
-            userId: firstReserve.userId,
-            title: 'Kadroya girdin! ⚽',
-            body: `${friendlyMatchTime(Number(matchRow.matchTimestamp))} · ${matchRow.location} maçında yer açıldı, artık as kadrodasın.`,
-            data: { matchId },
-          });
-        }
-      }
+      if (current.status === 'ACTIVE') await promoteFirstReserve(t, matchId, matchRow, pushes);
     }
 
     await t.run(
@@ -1307,6 +1321,100 @@ app.post('/api/matches/:id/leave', async (req, res) => {
   }
 });
 
+
+// MİSAFİR OYUNCU
+// Grubun bir üyesi, uygulamayı kullanmayan birini sadece adıyla maça ekler (yanında getirdiği arkadaşı).
+// Misafir, giriş yapamayan bir kullanıcı kaydıdır (role = 'GUEST'): kadroda yer tutar, saha ücretinden
+// pay alır, takımlara dağıtılır; grup üyesi olmadığı için liderlik tablosunda görünmez.
+const MAX_GUESTS_PER_PERSON = 5;
+
+app.post('/api/matches/:id/guests', async (req, res) => {
+  const name = String(req.body?.name ?? '').trim().replace(/\s+/g, ' ');
+  if (name.length < 2 || name.length > 40) return res.status(400).json({ error: 'Misafirin adını yaz (2-40 karakter).' });
+  try {
+    const matchId = req.params.id;
+    const hostId = req.user.id;
+    const guestId = randomUUID();
+    const hash = await bcrypt.hash(randomUUID(), 4); // kimse bilmez; misafir hiçbir zaman giriş yapamaz
+    const result = await tx(async (t) => {
+      const m = await t.get(
+        'SELECT "groupId", "creatorId", location, "maxPlayers", "matchTimestamp", "lockoutHours", status FROM "Matches" WHERE id = ? FOR UPDATE',
+        [matchId]
+      );
+      if (!m) return { status: 404, body: { error: 'Maç bulunamadı.' } };
+      if (m.status === 'COMPLETED') return { status: 400, body: { error: 'Bu maç tamamlandı.' } };
+      if (m.groupId) {
+        const member = await t.get('SELECT 1 FROM "GroupMembers" WHERE "groupId" = ? AND "userId" = ?', [m.groupId, hostId]);
+        if (!member) return { status: 403, body: { error: 'Misafiri sadece grup üyeleri ekleyebilir.' } };
+      }
+      const mine = await t.get(`SELECT COUNT(*) AS c FROM "MatchPlayers" WHERE "matchId" = ? AND "invitedBy" = ?`, [matchId, hostId]);
+      if (mine.c >= MAX_GUESTS_PER_PERSON) return { status: 400, body: { error: `Bir maça en fazla ${MAX_GUESTS_PER_PERSON} misafir getirebilirsin.` } };
+
+      const active = await t.get(`SELECT COUNT(*) AS c FROM "MatchPlayers" WHERE "matchId" = ? AND status = 'ACTIVE'`, [matchId]);
+      const full = active.c >= m.maxPlayers;
+      // Kilitli maçta boş yer varsa misafirle doldurulabilir (eksik kadroyu tamamlamak için); yedek eklenmez.
+      if (full && isLockedOut(m)) return { status: 403, body: { error: 'Kadro dolu ve maç kilitli, misafir eklenemez.' } };
+      const status = full ? 'RESERVE' : 'ACTIVE';
+
+      await t.run(
+        `INSERT INTO "User" (id, name, email, password, role, position) VALUES (?, ?, ?, ?, 'GUEST', NULL)`,
+        [guestId, name, `misafir-${guestId}@misafir.invalid`, hash]
+      );
+      await t.run('INSERT INTO "MatchPlayers" ("matchId", "userId", status, "invitedBy") VALUES (?, ?, ?, ?)', [matchId, guestId, status, hostId]);
+
+      if (m.creatorId && m.creatorId !== hostId) {
+        const host = await t.get('SELECT name FROM "User" WHERE id = ?', [hostId]);
+        await t.run('INSERT INTO "Notifications" (id, "userId", message, type) VALUES (?, ?, ?, ?)', [
+          randomUUID(), m.creatorId,
+          `${host?.name || 'Bir oyuncu'}, ${m.location} maçına misafir ekledi: ${name}${full ? ' (yedek)' : ''}`,
+          'JOIN',
+        ]);
+      }
+      return {
+        status: 200,
+        body: { message: full ? `Kadro dolu, ${name} yedeğe yazıldı.` : `${name} kadroya eklendi.`, guest: { id: guestId, name, status } },
+      };
+    });
+    res.status(result.status).json(result.body);
+  } catch (e) {
+    console.error('Add guest error:', e);
+    res.status(500).json({ error: 'Misafir eklenemedi.' });
+  }
+});
+
+// Misafiri getiren kişi ya da maçı yöneten çıkarabilir. Kadrodaysa ilk yedek yukarı çıkar.
+app.delete('/api/matches/:id/guests/:guestId', async (req, res) => {
+  try {
+    const { id: matchId, guestId } = req.params;
+    const perm = await canManageMatch(matchId, req.user.id);
+    const pushes: PushMessage[] = [];
+    const result = await tx(async (t) => {
+      const m = await t.get(
+        'SELECT location, "matchTimestamp", status FROM "Matches" WHERE id = ? FOR UPDATE',
+        [matchId]
+      );
+      if (!m) return { status: 404, body: { error: 'Maç bulunamadı.' } };
+      const g = await t.get(
+        `SELECT mp.status, mp."invitedBy" FROM "MatchPlayers" mp JOIN "User" u ON u.id = mp."userId"
+         WHERE mp."matchId" = ? AND mp."userId" = ? AND u.role = 'GUEST'`,
+        [matchId, guestId]
+      );
+      if (!g) return { status: 404, body: { error: 'Bu maçta böyle bir misafir yok.' } };
+      if (g.invitedBy !== req.user.id && !perm.allowed) return { status: 403, body: { error: 'Misafiri sadece getiren kişi ya da maçı yöneten çıkarabilir.' } };
+      if (m.status === 'COMPLETED') return { status: 400, body: { error: 'Tamamlanmış maçtan misafir çıkarılamaz.' } };
+
+      await t.run('DELETE FROM "MatchPlayers" WHERE "matchId" = ? AND "userId" = ?', [matchId, guestId]);
+      if (g.status === 'ACTIVE') await promoteFirstReserve(t, matchId, m, pushes);
+      await t.run(`DELETE FROM "User" WHERE id = ? AND role = 'GUEST'`, [guestId]);
+      return { status: 200, body: { message: 'Misafir çıkarıldı.' } };
+    });
+    sendPushInBackground(pushes);
+    res.status(result.status).json(result.body);
+  } catch (e) {
+    console.error('Remove guest error:', e);
+    res.status(500).json({ error: 'Misafir çıkarılamadı.' });
+  }
+});
 
 async function balanceTeams(players: any[]) {
   const ids = players.map((p) => p.id);
@@ -1476,7 +1584,8 @@ app.post('/api/matches/:id/finish', async (req, res) => {
       const matchRow = await t.get('SELECT location FROM "Matches" WHERE id = ?', [id]);
       await t.run(
         `INSERT INTO "Notifications" (id, "userId", message, type)
-         SELECT gen_random_uuid()::text, "userId", ?, 'MATCH_RESULT' FROM "MatchPlayers" WHERE "matchId" = ?`,
+         SELECT gen_random_uuid()::text, mp."userId", ?, 'MATCH_RESULT' FROM "MatchPlayers" mp
+         JOIN "User" u ON u.id = mp."userId" WHERE mp."matchId" = ? AND u.role <> 'GUEST'`,
         [`${matchRow?.location || 'Maç'} tamamlandı! İstatistiklerin işlendi. Hemen detaylara göz atabilir ve oyuncuları puanlayabilirsin.`, id]
       );
     });

@@ -100,6 +100,9 @@ export default function MatchDetailsScreen({ route, navigation }: any) {
   const [refreshing, setRefreshing] = useState(false);
   // Saha ücreti
   const [feeModal, setFeeModal] = useState(false);
+  const [guestModal, setGuestModal] = useState(false);
+  const [guestName, setGuestName] = useState('');
+  const [guestBusy, setGuestBusy] = useState(false);
   const [feeInput, setFeeInput] = useState('');
 
   // MVP
@@ -479,6 +482,47 @@ export default function MatchDetailsScreen({ route, navigation }: any) {
     }
   };
 
+  // Misafir: yanında getirdiğin, uygulamayı kullanmayan arkadaş. Adını yazman yeterli.
+  const myGuests = players.filter((p: any) => p.isGuest && p.invitedBy === user.id);
+  const addGuest = async () => {
+    const name = guestName.trim();
+    if (name.length < 2) return Alert.alert('Misafir', 'Misafirin adını yaz.');
+    setGuestBusy(true);
+    try {
+      const res = await apiFetch(`${API_URL}/matches/${matchInfo.id}/guests`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name }),
+      });
+      const data = await res.json();
+      if (res.ok) {
+        setGuestName('');
+        await fetchPlayers();
+        if (data.guest?.status === 'RESERVE') Alert.alert('Yedeğe yazıldı', data.message);
+      } else Alert.alert('Olmadı', data.error || 'Misafir eklenemedi.');
+    } catch (e) {
+      Alert.alert('Hata', 'Bağlantı sorunu yaşandı.');
+    }
+    setGuestBusy(false);
+  };
+  const removeGuest = (guest: any) => {
+    Alert.alert('Misafiri çıkar', `${guest.name} kadrodan çıkarılsın mı?`, [
+      { text: 'Vazgeç', style: 'cancel' },
+      {
+        text: 'Çıkar', style: 'destructive', onPress: async () => {
+          try {
+            const res = await apiFetch(`${API_URL}/matches/${matchInfo.id}/guests/${guest.id}`, { method: 'DELETE' });
+            const data = await res.json();
+            if (res.ok) fetchPlayers();
+            else Alert.alert('Olmadı', data.error || 'Çıkarılamadı.');
+          } catch (e) {
+            Alert.alert('Hata', 'Bağlantı sorunu yaşandı.');
+          }
+        },
+      },
+    ]);
+  };
+
   const renderPlayerCard = (player: any, idx: number, badgeText: string, badgeStyle: any, textStyle: any) => {
     // Puanlama: maç bitti, ben oynadım, o da oynadı ve kendim değilim.
     const canRate = iPlayed && player.status === 'ACTIVE' && player.id !== user.id;
@@ -496,7 +540,11 @@ export default function MatchDetailsScreen({ route, navigation }: any) {
           </View>
           <View>
             <Text style={styles.playerName}>{String(player.name)}</Text>
-            <Text style={styles.playerPosition}>{String(player.position || "Orta Saha")}</Text>
+            {player.isGuest ? (
+              <Text style={styles.guestLine}>Misafir{player.invitedByName ? ` · ${player.invitedBy === user.id ? 'senin' : `${player.invitedByName} getirdi`}` : ''}</Text>
+            ) : (
+              <Text style={styles.playerPosition}>{String(player.position || "Orta Saha")}</Text>
+            )}
             {player.goals > 0 && <Text style={{color: '#00E676', fontSize: 12, marginTop: 3, fontWeight: 'bold'}}>⚽ {player.goals} Gol</Text>}
             {pitchFee && player.status === 'ACTIVE' ? (
               isManager ? (
@@ -509,10 +557,17 @@ export default function MatchDetailsScreen({ route, navigation }: any) {
             ) : null}
           </View>
         </View>
-        <View style={[styles.statusBadge, canRate ? {backgroundColor: 'rgba(255, 193, 7, 0.2)'} : badgeStyle]}>
-          <Text style={[styles.statusText, canRate ? {color: '#FFC107'} : textStyle]}>
-            {canRate ? 'Puanla ⭐' : isCompleted && player.id === user.id ? 'Sen' : String(badgeText)}
-          </Text>
+        <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+          <View style={[styles.statusBadge, canRate ? {backgroundColor: 'rgba(255, 193, 7, 0.2)'} : badgeStyle]}>
+            <Text style={[styles.statusText, canRate ? {color: '#FFC107'} : textStyle]}>
+              {canRate ? 'Puanla ⭐' : isCompleted && player.id === user.id ? 'Sen' : String(badgeText)}
+            </Text>
+          </View>
+          {player.isGuest && !isCompleted && (player.invitedBy === user.id || isManager) ? (
+            <TouchableOpacity onPress={() => removeGuest(player)} style={{ marginLeft: 8, padding: 4 }} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }} accessibilityLabel={`${player.name} misafirini çıkar`}>
+              <Ionicons name="close-circle-outline" size={22} color="#94A3B8" />
+            </TouchableOpacity>
+          ) : null}
         </View>
       </Wrapper>
     );
@@ -700,6 +755,15 @@ export default function MatchDetailsScreen({ route, navigation }: any) {
           </View>
         </View>}
 
+        {!isCompleted && (
+          <TouchableOpacity style={styles.guestBtn} onPress={() => setGuestModal(true)} activeOpacity={0.8}>
+            <Ionicons name="person-add-outline" size={18} color="#00E676" />
+            <Text style={styles.guestBtnText}>
+              Misafir ekle{myGuests.length ? ` · ${myGuests.length} misafirin var` : ''}
+            </Text>
+          </TouchableOpacity>
+        )}
+
         {!teamsDivided ? (
           <View style={styles.playersContainer}>
             {unassigned.length === 0 ? (
@@ -857,6 +921,49 @@ export default function MatchDetailsScreen({ route, navigation }: any) {
             </TouchableOpacity>
             <TouchableOpacity style={styles.cancelBtn} onPress={() => setFeeModal(false)}>
               <Text style={styles.cancelBtnText}>Vazgeç</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+
+      <Modal visible={guestModal} transparent animationType="fade" onRequestClose={() => setGuestModal(false)}>
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContent}>
+            <Text style={styles.modalTitle}>Misafir ekle</Text>
+            <Text style={{ color: '#94A3B8', textAlign: 'center', marginBottom: 16 }}>
+              Yanında getirdiğin arkadaşlarının adını tek tek yaz. Uygulamayı yüklemelerine gerek yok; kadroda yer tutarlar ve saha ücretinden pay alırlar.
+            </Text>
+            <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+              <TextInput
+                style={[styles.feeInput, { flex: 1, width: undefined, minWidth: 0, marginBottom: 0, textAlign: 'left', fontSize: 16 }]}
+                value={guestName}
+                onChangeText={setGuestName}
+                placeholder="Örn: Ali (Mehmet'in kuzeni)"
+                placeholderTextColor="#64748B"
+                maxLength={40}
+                autoFocus
+                returnKeyType="done"
+                onSubmitEditing={addGuest}
+              />
+              <TouchableOpacity onPress={addGuest} disabled={guestBusy} style={[styles.guestAddBtn, guestBusy && { opacity: 0.5 }]}>
+                <Text style={styles.guestAddBtnText}>Ekle</Text>
+              </TouchableOpacity>
+            </View>
+            {myGuests.length > 0 && (
+              <View style={{ marginTop: 16 }}>
+                <Text style={{ color: '#94A3B8', fontSize: 13, marginBottom: 6 }}>Senin misafirlerin ({myGuests.length})</Text>
+                {myGuests.map((g: any) => (
+                  <View key={g.id} style={styles.guestRow}>
+                    <Text style={{ color: '#fff', flex: 1 }}>{String(g.name)}{g.status === 'RESERVE' ? '  · yedek' : ''}</Text>
+                    <TouchableOpacity onPress={() => removeGuest(g)} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+                      <Ionicons name="close-circle-outline" size={20} color="#94A3B8" />
+                    </TouchableOpacity>
+                  </View>
+                ))}
+              </View>
+            )}
+            <TouchableOpacity style={[styles.cancelBtn, { marginTop: 16 }]} onPress={() => setGuestModal(false)}>
+              <Text style={[styles.cancelBtnText, { color: '#CBD5E1' }]}>Bitti</Text>
             </TouchableOpacity>
           </View>
         </View>
@@ -1102,6 +1209,12 @@ const styles = StyleSheet.create({
   organizerAvatar: { width: 30, height: 30, borderRadius: 15, backgroundColor: "rgba(0, 230, 118, 0.1)", justifyContent: "center", alignItems: "center", marginRight: 10, borderWidth: 1, borderColor: "rgba(0, 230, 118, 0.3)" },
   organizerText: { color: "#94A3B8", fontSize: 14 },
   sectionHeader: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginTop: 30, marginBottom: 15 },
+  guestLine: { color: '#38BDF8', fontSize: 12, marginTop: 2 },
+  guestBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, borderWidth: 1, borderStyle: 'dashed', borderColor: 'rgba(0, 230, 118, 0.45)', borderRadius: 12, paddingVertical: 11, marginBottom: 14 },
+  guestBtnText: { color: '#00E676', fontWeight: '600', fontSize: 14 },
+  guestAddBtn: { backgroundColor: '#00E676', borderRadius: 12, paddingHorizontal: 16, flexShrink: 0, paddingVertical: 14, marginLeft: 8 },
+  guestAddBtnText: { color: '#0F172A', fontWeight: '700', fontSize: 15 },
+  guestRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 8, borderBottomWidth: 1, borderBottomColor: 'rgba(255,255,255,0.06)' },
   sectionTitle: { fontSize: 18, fontWeight: "bold", color: "#FFFFFF" },
   divideButton: { backgroundColor: 'rgba(255, 193, 7, 0.2)', paddingHorizontal: 12, paddingVertical: 6, borderRadius: 8, borderWidth: 1, borderColor: 'rgba(255, 193, 7, 0.5)' },
   divideButtonText: { color: '#FFC107', fontWeight: 'bold', fontSize: 13 },

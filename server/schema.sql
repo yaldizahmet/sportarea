@@ -205,3 +205,7 @@ alter table sportarea."Groups" add column "weeklyFee" integer check ("weeklyFee"
 --   select cron.schedule('sportarea-keepalive', '*/10 * * * *', $$
 --     select net.http_get(url := 'https://sportarea.onrender.com/api/health', timeout_milliseconds := 60000)
 --   $$);
+
+-- v6: Misafir oyuncu. Misafir, giriş yapamayan bir kullanıcı kaydıdır (User.role = 'GUEST');
+-- "invitedBy" onu maça getiren grup üyesidir.
+alter table sportarea."MatchPlayers" add column "invitedBy" text references sportarea."User"(id) on delete set null;
