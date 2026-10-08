@@ -1,63 +1,90 @@
-SporArea — en kolay yol
+SporArea — kısa rehber
+======================
 
-=== Gercek TELEFON (Expo Go) — detay: TELEFON.txt ===
-1) IP-GUNCELLE.ps1   2) npm run dev:phone   3) Expo Go ile QR tara
+Nerede ne çalışıyor?
+--------------------
+- Sunucu (API) + web sürümü : https://sportarea.onrender.com   (Render)
+- Veritabanı                : Supabase, "yaldizahmet's Project" içinde "sportarea" şeması
+- Saatlik zamanlayıcı       : Supabase pg_cron (haftalık maçı açar, maçtan 24 saat önce hatırlatır)
 
-=== TELEFONSUZ: TARAYICIDA TEST (Expo Web) ===
-Telefon / Expo Go gerekmez. Bilgisayarda Chrome/Edge ile acilir.
-
-1) Kok klasorde bir kez:
-     npm run install:all
-     npm install
-
-2) Sonra TEK komut (sunucu + web birlikte):
-     npm run dev:web
-
-   VEYA cift tik: MOBI-WEB.ps1  (sunucuyu ayri pencerede acar, sonra web)
-
-3) Tarayici http://localhost:8081 gibi bir adres acar; giris ekranindan devam et.
-   API icin sunucu http://localhost:3000 da calismali.
-
-Web'de localhost API kullanilir; mobile\.env IP'si web icin sart degil.
+GitHub'da main dalına gönderilen her değişiklik Render'da otomatik yayına çıkar.
+Uygulama (telefon ve web) her zaman canlı sunucuya bağlanır; bilgisayarda sunucu çalıştırmak gerekmez.
 
 
-ONCE KURULUM (bir kez)
-----------------------
-PowerShell’i ac, su klasore git (kendi kullanici adina gore duzelt):
+İLK KURULUM (bir kez)
+---------------------
+PowerShell'i aç, proje klasörüne git:
 
   cd C:\Users\user\Documents\sporarea
-
-Sonra TAM kelimeyle yaz (instal DEGIL, install):
-
   npm install
-
-Bu sadece kok klasorde calisir ve hem server hem mobile kurar:
-
   npm run install:all
 
-Alternatif: KURULUM.ps1 dosyasina sag tik -> PowerShell ile calistir.
-
-Komut hata verirse:
-- "npm" taninmiyorsa -> Node.js LTS kur: https://nodejs.org  (20 veya 22 onerilir)
-- Node 24 ile sorun cikarsa -> Node 22 LTS’e dusur
-- Yanlis klasordesin -> once "cd" ile sporarea klasorune gir
+"npm" tanınmıyorsa: Node.js 20 veya 22 LTS kur (https://nodejs.org).
 
 
-CALISTIRMA (her seferinde, 2 pencere)
---------------------------------------
-Pencere A (sunucu):
+GITHUB'DAN YENİ KODU ALINCA (her seferinde)
+-------------------------------------------
+  git pull
+  npm install --prefix mobile
 
-  cd C:\Users\user\Documents\sporarea
-  npm run server
+Yeni paket eklendiyse ikinci komut şart; yoksa uygulama açılmaz.
 
-Pencere B (Expo):
 
-  cd C:\Users\user\Documents\sporarea
-  npm run mobile
+UYGULAMAYI BİLGİSAYARDA DENEMEK
+-------------------------------
+Tarayıcıda (en kolayı):
 
-Telefonda Expo Go ile QR kodu tara; telefon ve PC ayni Wi-Fi’da olsun.
+  npm run mobile:web
 
-mobile\.env icinde EXPO_PUBLIC_API_URL bilgisayarinin IPv4’u olmali (degistiyse ipconfig ile guncelle).
+  Açılan http://localhost:8081 adresinde giriş yap. Canlı sunucuya bağlanır.
 
-server\.env icinde JWT_SECRET ve DATABASE_URL hazir olmali (yoksa sunucu acilmaz).
-Veritabani artik Supabase'te (Postgres, "sportarea" semasi). Sema: server\schema.sql
+Telefonda Expo Go ile:
+
+  npm run mobile:tunnel
+
+  Çıkan QR kodu Expo Go ile tara. Not: Push bildirimleri Expo Go'da çalışmaz, sadece APK'da.
+
+
+1) WEB SÜRÜMÜNÜ GÜNCELLEMEK (ekranlarda değişiklik yaptıysan)
+------------------------------------------------------------
+Web sürümü server\public klasöründen sunuluyor. Ekran değiştiyse bunu yeniden üretmen gerekir,
+yoksa sportarea.onrender.com eski haliyle kalır:
+
+  npm run build:web
+  git add -A
+  git commit -m "Web sürümünü güncelle"
+  git push
+
+Birkaç dakika içinde Render yeni sürümü yayına alır.
+Sadece sunucu kodunu (server\index.ts) değiştirdiysen build:web gerekmez, git push yeterli.
+
+
+2) ANDROID APK ÇIKARMAK
+-----------------------
+  cd mobile
+  npx eas build -p android --profile preview
+
+İlk seferde Expo hesabınla giriş ister (npx eas login).
+Derleme Expo'nun sunucusunda yapılır (10-20 dk). Sonunda çıkan indirme linkini gruba at.
+APK uygulama kodunu kendi içinde taşır: ekranlarda değişiklik yaptığında Android'cilerin
+yeni hali görmesi için yeni APK çıkarıp tekrar paylaşman gerekir.
+Sadece sunucu değiştiyse (server klasörü) yeni APK gerekmez.
+
+
+AYARLAR (Render > sportarea > Environment)
+------------------------------------------
+- JWT_SECRET    : uzun rastgele metin (değişirse herkes yeniden giriş yapar)
+- DATABASE_URL  : Supabase "Session pooler" adresi, kullanıcı sportarea_app
+                  postgresql://sportarea_app.nidydlccherwlhguylpj:SIFRE@aws-1-eu-west-1.pooler.supabase.com:5432/postgres
+
+Veritabanı şeması: server\schema.sql
+
+
+SORUN ÇIKARSA
+-------------
+- Uygulama "sunucuya ulaşılamadı" diyorsa: Render ücretsiz sunucu uykuda olabilir,
+  ilk açılış 30-60 saniye sürebilir. Bekleyip tekrar dene.
+- Render'da yükleme "Failed" ise: Render > Logs'taki son satırlara bak
+  (çoğunlukla eksik JWT_SECRET / DATABASE_URL).
+- Not: TELEFON.txt, IP-GUNCELLE.ps1, MOBI-WEB.ps1 eski yerel kurulum içindir;
+  uygulama artık doğrudan canlı sunucuya bağlandığı için gerekmiyorlar.
