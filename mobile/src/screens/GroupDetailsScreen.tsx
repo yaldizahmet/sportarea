@@ -21,6 +21,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { StatusBar } from 'expo-status-bar';
 import { API_URL } from '../config/api';
 import { DAY_NAMES, DAY_NAMES_SHORT, formatWeekly } from '../utils/format';
+import { inviteLink } from '../utils/invite';
 
 // Pazartesi'den başlayan sıra (halı saha haftası böyle düşünülüyor)
 const DAY_ORDER = [1, 2, 3, 4, 5, 6, 0];
@@ -171,11 +172,24 @@ export default function GroupDetailsScreen({ route, navigation }: any) {
       `⚽ ${group.name} grubuna katıl!`,
       weekly ? `${weekly} · ${group.weeklyLocation}` : null,
       '',
-      `1) Aç: https://sportarea.onrender.com (iPhone'da da çalışır, indirme gerekmez)`,
-      `2) Kayıt ol, "Kodla Katıl"a bas ve şu kodu yaz: ${group.inviteCode}`,
+      `Katılmak için dokun (iPhone'da da çalışır, indirme gerekmez):`,
+      inviteLink(group.inviteCode),
+      '',
+      `Uygulama yüklüyse: "Kodla Katıl" → ${group.inviteCode}`,
     ].filter((x) => x !== null);
+    const message = lines.join('\n');
+    // Bilgisayar tarayıcılarında paylaşım menüsü yok: mesajı panoya kopyala.
+    if (Platform.OS === 'web' && typeof navigator !== 'undefined' && !(navigator as any).share) {
+      try {
+        await navigator.clipboard.writeText(message);
+        showAlert('Kopyalandı', 'Davet mesajı kopyalandı. WhatsApp grubuna yapıştırabilirsin.');
+      } catch {
+        showAlert('Davet linki', message);
+      }
+      return;
+    }
     try {
-      await Share.share({ message: lines.join('\n') });
+      await Share.share({ message });
     } catch (error) {
       showAlert('Hata', 'Paylaşım yapılamadı.');
     }
@@ -208,6 +222,45 @@ export default function GroupDetailsScreen({ route, navigation }: any) {
   };
 
   const alwaysInCount = members.filter((m) => m.alwaysIn).length;
+
+  const confirmThen = (title: string, msg: string, action: string, run: () => void) => {
+    if (Platform.OS === 'web') {
+      if (window.confirm(`${title}\n\n${msg}`)) run();
+    } else {
+      Alert.alert(title, msg, [
+        { text: 'Vazgeç', style: 'cancel' },
+        { text: action, style: 'destructive', onPress: run },
+      ]);
+    }
+  };
+
+  const handleLeave = () =>
+    confirmThen('Gruptan ayrıl', 'Yaklaşan maçlarda kadrodaysan yerin yedeğe geçer. Emin misin?', 'Ayrıl', async () => {
+      try {
+        const res = await apiFetch(`${API_URL}/groups/${group.id}/leave`, { method: 'POST' });
+        const data = await res.json();
+        if (res.ok) {
+          showAlert('Ayrıldın', data.message);
+          navigation.goBack();
+        } else showAlert('Olmadı', data.error || 'Ayrılamadın.');
+      } catch (e) {
+        showAlert('Hata', 'Bağlantı sorunu yaşandı.');
+      }
+    });
+
+  const handleRemoveMember = (member: any) =>
+    confirmThen('Üyeyi çıkar', `${member.name} gruptan çıkarılsın mı? Yaklaşan maçlardaki yeri yedeğe geçer.`, 'Çıkar', async () => {
+      try {
+        const res = await apiFetch(`${API_URL}/groups/${group.id}/members/${member.id}`, { method: 'DELETE' });
+        const data = await res.json();
+        if (res.ok) {
+          fetchMembers();
+          fetchGroup();
+        } else showAlert('Olmadı', data.error || 'Çıkarılamadı.');
+      } catch (e) {
+        showAlert('Hata', 'Bağlantı sorunu yaşandı.');
+      }
+    });
 
   return (
     <SafeAreaView style={styles.safeArea}>
@@ -399,15 +452,29 @@ export default function GroupDetailsScreen({ route, navigation }: any) {
                       </Text>
                     </View>
                   </View>
-                  <View style={styles.memberStats}>
-                    <Ionicons name="football" size={14} color="#A0A0A0" />
-                    <Text style={styles.memberMatches}>{String(member.matches || 0)}</Text>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                    <View style={styles.memberStats}>
+                      <Ionicons name="football" size={14} color="#A0A0A0" />
+                      <Text style={styles.memberMatches}>{String(member.matches || 0)}</Text>
+                    </View>
+                    {isCreator && !founder && (
+                      <TouchableOpacity onPress={() => handleRemoveMember(member)} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }} accessibilityLabel={`${member.name} gruptan çıkar`}>
+                        <Ionicons name="person-remove-outline" size={20} color="#F87171" />
+                      </TouchableOpacity>
+                    )}
                   </View>
                 </View>
               );
             })
           )}
         </View>
+
+        {!isCreator && group.id && (
+          <TouchableOpacity style={styles.deleteButton} onPress={handleLeave}>
+            <Ionicons name="exit-outline" size={18} color="#F87171" style={{ marginRight: 8 }} />
+            <Text style={styles.deleteButtonText}>Gruptan ayrıl</Text>
+          </TouchableOpacity>
+        )}
 
         {isCreator && (
           <TouchableOpacity style={styles.deleteButton} onPress={handleDeleteGroup}>

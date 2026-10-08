@@ -52,3 +52,13 @@ export function formatWeekly(day?: number | null, time?: string | null) {
   const h = Number(String(time).split(':')[0]);
   return `Her ${DAYS[day]}${h < 6 ? ' gecesi' : ''} ${time}`;
 }
+
+// Kısa saat etiketi: "Bugün 18:00", "Yarın 21:00", "Cmt 18:00"
+export function formatClock(ts: number) {
+  const d = new Date(ts);
+  const today = new Date();
+  const startOf = (x: Date) => new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime();
+  const diff = Math.round((startOf(d) - startOf(today)) / 86400000);
+  const day = diff === 0 ? 'Bugün' : diff === 1 ? 'Yarın' : DAYS_SHORT[d.getDay()];
+  return `${day} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}

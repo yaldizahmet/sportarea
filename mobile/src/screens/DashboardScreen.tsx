@@ -12,6 +12,8 @@ import {
   KeyboardAvoidingView,
   Platform,
   Alert,
+  RefreshControl,
+  ActivityIndicator,
 } from "react-native";
 import { useFocusEffect } from "@react-navigation/native";
 import { SafeAreaView } from "react-native-safe-area-context";
@@ -21,6 +23,7 @@ import { StatusBar } from "expo-status-bar";
 import { API_URL } from "../config/api";
 import { formatMatchDate, formatWeekly, isPastMatch, DAY_NAMES_SHORT } from "../utils/format";
 import { registerForPush, matchIdFromResponse } from "../utils/push";
+import { consumePendingInvite } from "../utils/invite";
 
 // Maç kartında "benim cevabım" rozeti
 const MY_STATUS_BADGE: Record<string, { label: string; color: string; bg: string; border: string }> = {
@@ -47,6 +50,9 @@ export default function DashboardScreen({ route, navigation }: any) {
   const [matches, setMatches] = useState<any[]>([]);
   const [groups, setGroups] = useState<any[]>([]);
   const [notifications, setNotifications] = useState<any[]>([]);
+  // İlk yükleme bitene kadar "grubun yok" gibi yanlış boş durumlar gösterilmez.
+  const [loaded, setLoaded] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
 
   const [isModalVisible, setIsModalVisible] = useState(false);
   const [isNotificationsVisible, setIsNotificationsVisible] = useState(false);
@@ -109,8 +115,32 @@ export default function DashboardScreen({ route, navigation }: any) {
       if (Array.isArray(nData)) setNotifications(nData);
     } catch (e) {
       console.log("Bağlantı hatası:", e);
+    } finally {
+      setLoaded(true);
     }
   };
+
+  const onRefresh = async () => {
+    setRefreshing(true);
+    await fetchData();
+    setRefreshing(false);
+  };
+
+  // Davet linkiyle gelip kayıt olduysa / giriş yaptıysa gruba otomatik katıl ve grubu aç.
+  useEffect(() => {
+    (async () => {
+      const joined = await consumePendingInvite();
+      if (!joined) return;
+      await fetchData();
+      showAlert(
+        joined.alreadyMember ? "Zaten gruptasın" : "Gruba katıldın 🎉",
+        joined.alreadyMember
+          ? `${joined.group.name} grubunun zaten üyesisin.`
+          : `${joined.group.name} grubuna hoş geldin. Düzenli geliyorsan grup sayfasından "Her hafta varım"ı açabilirsin.`
+      );
+      navigation.navigate("GroupDetails", { group: joined.group, user });
+    })();
+  }, []);
 
   const upcomingMatches = matches
     .filter((m) => !isPastMatch(m))
@@ -350,7 +380,11 @@ export default function DashboardScreen({ route, navigation }: any) {
           </View>
         </View>
 
-        <ScrollView style={styles.scrollContent} showsVerticalScrollIndicator={false}>
+        <ScrollView
+          style={styles.scrollContent}
+          showsVerticalScrollIndicator={false}
+          refreshControl={Platform.OS === 'web' ? undefined : <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#00E676" colors={["#00E676"]} />}
+        >
           <View style={styles.quickActionsContainer}>
             <TouchableOpacity style={styles.actionCard} onPress={openCreateMatch}>
               <LinearGradient colors={["rgba(0, 230, 118, 0.15)", "rgba(0, 230, 118, 0.05)"]} style={styles.actionGradient}>
@@ -390,18 +424,36 @@ export default function DashboardScreen({ route, navigation }: any) {
             </TouchableOpacity>
           )}
 
+          {!loaded ? (
+            <View style={{ paddingVertical: 60, alignItems: 'center' }}>
+              <ActivityIndicator color="#00E676" size="large" />
+              <Text style={{ color: '#94A3B8', marginTop: 14 }}>Maçlar yükleniyor…</Text>
+            </View>
+          ) : groups.length === 0 ? (
+            // Yeni kullanıcı: ne yapacağını tek bakışta göster
+            <View style={localStyles.welcomeCard}>
+              <Text style={localStyles.welcomeTitle}>Hoş geldin! 👋</Text>
+              <Text style={localStyles.welcomeText}>
+                Maçlar grup içinde ayarlanıyor. Arkadaşların bir grup kurduysa onlardan davet linkini ya da kodunu iste.
+              </Text>
+              <TouchableOpacity style={localStyles.welcomePrimary} onPress={() => setIsJoinGroupModalVisible(true)}>
+                <Ionicons name="key-outline" size={18} color="#0F172A" />
+                <Text style={localStyles.welcomePrimaryText}>Davet koduyla katıl</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={localStyles.welcomeSecondary} onPress={() => setIsCreateGroupModalVisible(true)}>
+                <Text style={localStyles.welcomeSecondaryText}>Ya da kendi grubunu kur</Text>
+              </TouchableOpacity>
+            </View>
+          ) : null}
+
+          {loaded && groups.length > 0 && <>
           <View style={styles.sectionHeader}>
             <Text style={styles.sectionTitle}>Yaklaşan Maçlar</Text>
-            <TouchableOpacity onPress={fetchData}>
-              <Text style={styles.seeAllText}>Yenile</Text>
-            </TouchableOpacity>
           </View>
 
           {upcomingMatches.length === 0 ? (
             <Text style={{ color: "#A0A0A0", textAlign: "center", marginVertical: 20 }}>
-              {groups.length === 0
-                ? "Henüz bir grubun yok. Grup kur ya da davet koduyla katıl."
-                : "Yaklaşan maç yok. Grup sayfasından haftalık maçı ayarlarsan her hafta kendiliğinden açılır."}
+              Yaklaşan maç yok. Grup sayfasından haftalık maçı ayarlarsan her hafta kendiliğinden açılır.
             </Text>
           ) : (
             upcomingMatches.map((m) => renderMatchCard(m, false))
@@ -427,11 +479,7 @@ export default function DashboardScreen({ route, navigation }: any) {
             </TouchableOpacity>
           </View>
 
-          {groups.length === 0 ? (
-            <Text style={{ color: "#A0A0A0", textAlign: "center", marginVertical: 20 }}>
-              Hiç grup bulunamadı. Yeni bir grup kurun!
-            </Text>
-          ) : (
+          {groups.length === 0 ? null : (
             groups.map((group) => {
               const weekly = formatWeekly(group.weeklyDay, group.weeklyTime);
               return (
@@ -462,6 +510,8 @@ export default function DashboardScreen({ route, navigation }: any) {
               );
             })
           )}
+
+          </>}
 
           <View style={{ height: 40 }} />
         </ScrollView>
@@ -767,6 +817,13 @@ const localStyles = StyleSheet.create({
   answerBannerText: { flex: 1, color: '#0F172A', fontWeight: 'bold', fontSize: 14 },
   fieldLabel: { color: '#94A3B8', marginBottom: 8, fontSize: 13 },
   hint: { color: '#FFC107', fontSize: 12, marginBottom: 12 },
+  welcomeCard: { backgroundColor: '#1E293B', borderRadius: 20, padding: 22, marginTop: 6, borderWidth: 1, borderColor: 'rgba(0, 230, 118, 0.25)' },
+  welcomeTitle: { color: '#FFFFFF', fontSize: 22, fontWeight: 'bold' },
+  welcomeText: { color: '#CBD5E1', fontSize: 15, lineHeight: 22, marginTop: 8, marginBottom: 18 },
+  welcomePrimary: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, backgroundColor: '#00E676', borderRadius: 14, paddingVertical: 14 },
+  welcomePrimaryText: { color: '#0F172A', fontWeight: 'bold', fontSize: 16 },
+  welcomeSecondary: { alignItems: 'center', paddingVertical: 14 },
+  welcomeSecondaryText: { color: '#FFC107', fontWeight: '600', fontSize: 15 },
 });
 
 const styles = StyleSheet.create({
@@ -831,7 +888,6 @@ const styles = StyleSheet.create({
     marginTop: 10,
   },
   sectionTitle: { fontSize: 20, fontWeight: "bold", color: "#FFFFFF" },
-  seeAllText: { color: "#00E676", fontSize: 14, fontWeight: "600" },
   modalOverlay: {
     flex: 1,
     backgroundColor: "rgba(0, 0, 0, 0.7)",

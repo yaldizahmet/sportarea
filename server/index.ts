@@ -225,7 +225,7 @@ app.get('/api/health', (req, res) => {
 // Authentication Middleware
 const authenticateToken = (req: any, res: any, next: any) => {
   // /cron/tick kendi gizli anahtarıyla korunuyor (aşağıda).
-  if (req.path === '/login' || req.path === '/register' || req.path === '/me' || req.path === '/cron/tick' || req.path === '/health') {
+  if (req.path === '/login' || req.path === '/register' || req.path === '/me' || req.path === '/cron/tick' || req.path === '/health' || req.path.startsWith('/invite/')) {
     return next();
   }
   const token = req.headers.authorization?.split(' ')[1];
@@ -367,10 +367,32 @@ app.post('/api/groups/join', async (req, res) => {
 
     if (!group) return res.status(404).json({ error: 'Geçersiz davet kodu' });
 
-    await db.run('INSERT INTO "GroupMembers" ("groupId", "userId") VALUES (?, ?) ON CONFLICT DO NOTHING', [group.id, userId]);
-    res.json({ message: 'Gruba katılım başarılı!' });
+    const r = await db.run('INSERT INTO "GroupMembers" ("groupId", "userId") VALUES (?, ?) ON CONFLICT DO NOTHING', [group.id, userId]);
+    const full = await db.get('SELECT id, name, "inviteCode", "creatorId" FROM "Groups" WHERE id = ?', [group.id]);
+    res.json({
+      message: r.changes ? 'Gruba katılım başarılı!' : 'Zaten bu grubun üyesisin.',
+      alreadyMember: r.changes === 0,
+      group: full,
+    });
   } catch (error) {
     res.status(500).json({ error: 'Gruba katılırken hata oluştu.' });
+  }
+});
+
+// Davet linki önizlemesi (giriş yapmadan): "X grubuna davet edildin". Sadece ad ve üye sayısı döner.
+const inviteLimiter = rateLimit({ windowMs: 15 * 60 * 1000, max: 30, message: { error: 'Çok fazla deneme.' } });
+app.get('/api/invite/:code', inviteLimiter, async (req, res) => {
+  try {
+    const code = String(req.params.code ?? '').trim().toUpperCase();
+    const g = await db.get(
+      `SELECT g.name, (SELECT COUNT(*) FROM "GroupMembers" WHERE "groupId" = g.id) AS "memberCount"
+       FROM "Groups" g WHERE g."inviteCode" = ?`,
+      [code]
+    );
+    if (!g) return res.status(404).json({ error: 'Davet kodu bulunamadı.' });
+    res.json(g);
+  } catch (e) {
+    res.status(500).json({ error: 'Davet okunamadı.' });
   }
 });
 
@@ -498,6 +520,65 @@ app.post('/api/groups/:id/always-in', async (req, res) => {
   }
 });
 
+// Bir üyeyi gruptan çıkarır: yaklaşan maçlarda kadrodaysa yerini boşaltır (ilk yedek kadroya geçer),
+// cevaplarını ve bekleyen davetlerini temizler. Kilit süresi dolmuş maçlarda kadroda kalır.
+async function removeFromGroup(groupId: string, userId: string) {
+  const upcoming = await db.all(
+    `SELECT m.id FROM "Matches" m
+     JOIN "MatchPlayers" mp ON mp."matchId" = m.id AND mp."userId" = ?
+     WHERE m."groupId" = ? AND m.status = 'OPEN' AND m."matchTimestamp" > ?`,
+    [userId, groupId, Date.now()]
+  );
+  for (const m of upcoming) {
+    await respondToMatch(m.id, userId, 'NO').catch(() => null);
+  }
+  await db.run(
+    `DELETE FROM "MatchResponses" WHERE "userId" = ? AND "matchId" IN (SELECT id FROM "Matches" WHERE "groupId" = ?)`,
+    [userId, groupId]
+  );
+  await db.run(
+    `DELETE FROM "Notifications" WHERE "userId" = ? AND type = 'MATCH_INVITE'
+       AND metadata::jsonb ->> 'matchId' IN (SELECT id FROM "Matches" WHERE "groupId" = ?)`,
+    [userId, groupId]
+  );
+  await db.run('DELETE FROM "GroupMembers" WHERE "groupId" = ? AND "userId" = ?', [groupId, userId]);
+}
+
+// Gruptan ayrıl (kurucu ayrılamaz; grubu silebilir).
+app.post('/api/groups/:id/leave', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const group = await db.get('SELECT "creatorId" FROM "Groups" WHERE id = ?', [id]);
+    if (!group) return res.status(404).json({ error: 'Grup bulunamadı.' });
+    if (!(await isGroupMember(id, req.user.id))) return res.status(403).json({ error: 'Bu grubun üyesi değilsin.' });
+    if (group.creatorId === req.user.id) {
+      return res.status(400).json({ error: 'Grubu kuran kişi ayrılamaz. İstersen grubu silebilirsin.' });
+    }
+    await removeFromGroup(id, req.user.id);
+    res.json({ message: 'Gruptan ayrıldın.' });
+  } catch (e) {
+    console.error('Leave group error:', e);
+    res.status(500).json({ error: 'Gruptan ayrılırken hata oluştu.' });
+  }
+});
+
+// Kurucu bir üyeyi gruptan çıkarır.
+app.delete('/api/groups/:id/members/:userId', async (req, res) => {
+  try {
+    const { id, userId } = req.params;
+    const group = await db.get('SELECT "creatorId" FROM "Groups" WHERE id = ?', [id]);
+    if (!group) return res.status(404).json({ error: 'Grup bulunamadı.' });
+    if (group.creatorId !== req.user.id) return res.status(403).json({ error: 'Üyeleri sadece grubu kuran kişi çıkarabilir.' });
+    if (userId === req.user.id) return res.status(400).json({ error: 'Kendini çıkaramazsın.' });
+    if (!(await isGroupMember(id, userId))) return res.status(404).json({ error: 'Bu kişi grupta değil.' });
+    await removeFromGroup(id, userId);
+    res.json({ message: 'Üye gruptan çıkarıldı.' });
+  } catch (e) {
+    console.error('Remove member error:', e);
+    res.status(500).json({ error: 'Üye çıkarılamadı.' });
+  }
+});
+
 app.delete('/api/groups/:id', async (req, res) => {
   try {
     const { id } = req.params;
@@ -540,6 +621,46 @@ app.post('/api/users/:id/position', async (req, res) => {
 
 app.get('/api/leaderboard', async (req, res) => {
   try {
+    // ?groupId=... ile sadece o grubun üyeleri ve o grubun maçları.
+    const groupId = req.query.groupId ? String(req.query.groupId) : null;
+    if (groupId) {
+      if (!(await isGroupMember(groupId, req.user.id))) return res.status(403).json({ error: 'Bu grubun üyesi değilsin.' });
+      const rows = await db.all(`
+        SELECT u.id, u.name, u.avatar, u.position,
+               COALESCE(mp.matches, 0) AS matches,
+               COALESCE(mp.goals, 0) AS goals,
+               COALESCE(v.mvp, 0) AS mvp,
+               r.avg_all, COALESCE(r.c, 0) AS rating_count
+        FROM "GroupMembers" gm
+        JOIN "User" u ON u.id = gm."userId"
+        LEFT JOIN (
+          SELECT mp."userId", COUNT(*) AS matches, SUM(mp.goals) AS goals
+          FROM "MatchPlayers" mp JOIN "Matches" m ON m.id = mp."matchId"
+          WHERE m."groupId" = ? AND m.status = 'COMPLETED' AND mp.status = 'ACTIVE'
+          GROUP BY mp."userId"
+        ) mp ON mp."userId" = u.id
+        LEFT JOIN (
+          SELECT v."votedId", COUNT(*) AS mvp
+          FROM "MvpVotes" v JOIN "Matches" m ON m.id = v."matchId"
+          WHERE m."groupId" = ?
+          GROUP BY v."votedId"
+        ) v ON v."votedId" = u.id
+        LEFT JOIN (
+          SELECT "ratedId", (AVG(speed) + AVG(shoot) + AVG(pass) + AVG(physique)) / 4 AS avg_all, COUNT(*) AS c
+          FROM "Ratings" GROUP BY "ratedId"
+        ) r ON r."ratedId" = u.id
+        WHERE gm."groupId" = ?
+      `, [groupId, groupId, groupId]);
+      return res.json(rows.map((u: any) => {
+        let score = u.rating_count > 0 ? Math.round(u.avg_all) : 60;
+        score += (u.matches > 5 ? 2 : 0) + (u.goals > 10 ? 3 : 0);
+        return {
+          id: u.id, name: u.name, avatar: u.avatar, position: u.position,
+          matches: u.matches, goals: u.goals, mvp: u.mvp, score: Math.min(score, 99),
+        };
+      }));
+    }
+
     const rows = await db.all(`
       SELECT u.id, u.name, u.avatar, u.position,
              COALESCE(mp.matches, 0) AS matches,

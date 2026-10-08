@@ -11,14 +11,15 @@ import {
   Modal,
   Image,
   Platform,
-  Linking
+  Linking,
+  RefreshControl,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { LinearGradient } from "expo-linear-gradient";
 import { Ionicons } from "@expo/vector-icons";
 import { StatusBar } from "expo-status-bar";
 import { API_URL } from "../config/api";
-import { formatMatchDate } from "../utils/format";
+import { formatMatchDate, formatClock } from "../utils/format";
 
 const getCoordinates = (team: any[], isTeamA: boolean) => {
   const width = 320;
@@ -65,6 +66,15 @@ const getCoordinates = (team: any[], isTeamA: boolean) => {
   return coords;
 };
 
+// Puanlama seviyeleri (sunucuya 1-99 arası sayı olarak gider; rozet eşikleri 78 ve 82)
+const RATING_LEVELS = [
+  { label: 'Zayıf', value: 40 },
+  { label: 'Orta', value: 55 },
+  { label: 'İyi', value: 70 },
+  { label: 'Çok iyi', value: 82 },
+  { label: 'Yıldız', value: 94 },
+];
+
 export default function MatchDetailsScreen({ route, navigation }: any) {
   // Bildirime dokunarak gelindiğinde elimizde sadece maç kimliği olur; geri kalanı sunucudan tamamlanır.
   const [matchInfo, setMatchInfo] = useState<any>(route.params?.match || {});
@@ -86,7 +96,8 @@ export default function MatchDetailsScreen({ route, navigation }: any) {
   // Rating
   const [ratingModalVisible, setRatingModalVisible] = useState(false);
   const [ratingTarget, setRatingTarget] = useState<any>(null);
-  const [ratingScores, setRatingScores] = useState({ speed: 60, shoot: 60, pass: 60, physique: 60 });
+  const [ratingScores, setRatingScores] = useState<Record<string, number | null>>({ speed: null, shoot: null, pass: null, physique: null });
+  const [refreshing, setRefreshing] = useState(false);
 
   // MVP
   const [mvpModalVisible, setMvpModalVisible] = useState(false);
@@ -218,12 +229,16 @@ export default function MatchDetailsScreen({ route, navigation }: any) {
       return;
     }
     setRatingTarget(player);
-    setRatingScores({ speed: 60, shoot: 60, pass: 60, physique: 60 });
+    setRatingScores({ speed: null, shoot: null, pass: null, physique: null });
     setRatingModalVisible(true);
   };
 
   const submitRating = async () => {
     if(!ratingTarget) return;
+    if (Object.values(ratingScores).some((v) => v === null)) {
+      Alert.alert('Eksik', 'Dört özelliğin hepsi için bir seviye seç.');
+      return;
+    }
     try {
        const res = await apiFetch(`${API_URL}/matches/${matchInfo.id}/rate`, {
          method: 'POST',
@@ -401,6 +416,21 @@ export default function MatchDetailsScreen({ route, navigation }: any) {
   const myStatus: string | null = players.find((p: any) => p.id === user.id)?.status ?? null;
   const iPlayed = isCompleted && myStatus === 'ACTIVE';
 
+  // Maçın aşaması: açık -> kilitli (son değişiklik saati geçti) -> başladı -> tamamlandı
+  const ts = Number(matchTimestamp) || 0;
+  const lockHours = Number(matchInfo.lockoutHours ?? 0);
+  const lockAt = ts ? ts - lockHours * 3600 * 1000 : 0;
+  const now = Date.now();
+  const phase: 'open' | 'locked' | 'started' | 'completed' =
+    isCompleted ? 'completed' : ts && now >= ts ? 'started' : lockAt && lockHours > 0 && now >= lockAt ? 'locked' : 'open';
+  const inRoster = myStatus === 'ACTIVE' || myStatus === 'RESERVE';
+
+  const onRefresh = async () => {
+    setRefreshing(true);
+    await Promise.all([fetchMatchInfo(), fetchPlayers(), fetchMvp()]);
+    setRefreshing(false);
+  };
+
   const teamA = activePlayers.filter((p: any) => p.team === 'A');
   const teamB = activePlayers.filter((p: any) => p.team === 'B');
   const unassigned = activePlayers.filter((p: any) => p.team !== 'A' && p.team !== 'B');
@@ -457,7 +487,11 @@ export default function MatchDetailsScreen({ route, navigation }: any) {
         </TouchableOpacity>
       </View>
 
-      <ScrollView style={styles.container} showsVerticalScrollIndicator={false}>
+      <ScrollView
+        style={styles.container}
+        showsVerticalScrollIndicator={false}
+        refreshControl={Platform.OS === 'web' ? undefined : <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#00E676" colors={["#00E676"]} />}
+      >
         <LinearGradient colors={["#1E293B", "#0F172A"]} style={styles.infoCard}>
           <View style={styles.infoTop}>
             <Text style={styles.matchTitle}>{String(matchInfo.location || "Bilinmeyen Saha")}</Text>
@@ -486,19 +520,21 @@ export default function MatchDetailsScreen({ route, navigation }: any) {
 
           <View style={styles.organizerRow}>
             <View style={styles.organizerAvatar}><Ionicons name="flag-outline" size={16} color="#00E676" /></View>
-            <Text style={styles.organizerText}>
-              Durum: <Text style={styles.organizerName}>{matchStatus === 'COMPLETED' ? 'Tamamlandı' : 'Açık'}</Text>
-            </Text>
-            {matchStatus === 'OPEN' && isManager && (
-              (matchTimestamp && Date.now() < matchTimestamp) ? (
-                <TouchableOpacity style={{marginLeft: 'auto', backgroundColor: '#EF4444', paddingHorizontal: 12, paddingVertical: 6, borderRadius: 8}} onPress={handleCancelMatch}>
-                   <Text style={{color: '#fff', fontSize: 13, fontWeight: 'bold'}}>Maçı İptal Et</Text>
-                </TouchableOpacity>
-              ) : (
-                <TouchableOpacity style={{marginLeft: 'auto', backgroundColor: '#EF4444', paddingHorizontal: 12, paddingVertical: 6, borderRadius: 8}} onPress={() => setFinishModalVisible(true)}>
-                   <Text style={{color: '#fff', fontSize: 13, fontWeight: 'bold'}}>Maçı Bitir</Text>
-                </TouchableOpacity>
-              )
+            <View style={{ flex: 1 }}>
+              <Text style={styles.organizerText}>
+                {phase === 'completed' ? 'Maç tamamlandı'
+                  : phase === 'started' ? 'Maç saati geldi, sonuç bekleniyor'
+                  : phase === 'locked' ? 'Kadro kilitlendi'
+                  : 'Kadro açık'}
+              </Text>
+              {phase === 'open' && lockAt > 0 && lockHours > 0 && (
+                <Text style={styles.lockHint}>Son değişiklik: {formatClock(lockAt)}</Text>
+              )}
+            </View>
+            {phase !== 'completed' && phase !== 'started' && isManager && (
+              <TouchableOpacity style={{backgroundColor: 'rgba(239, 68, 68, 0.15)', borderWidth: 1, borderColor: 'rgba(239, 68, 68, 0.5)', paddingHorizontal: 12, paddingVertical: 6, borderRadius: 8}} onPress={handleCancelMatch}>
+                 <Text style={{color: '#F87171', fontSize: 13, fontWeight: 'bold'}}>İptal Et</Text>
+              </TouchableOpacity>
             )}
           </View>
           {matchStatus === 'COMPLETED' && (matchScore || matchInfo.score) ? (
@@ -653,7 +689,7 @@ export default function MatchDetailsScreen({ route, navigation }: any) {
         <View style={{ height: 150 }} />
       </ScrollView>
 
-      {matchStatus === 'OPEN' && (
+      {phase === 'open' && (
         <View style={styles.footer}>
           <Text style={styles.answerPrompt}>
             {myStatus === 'ACTIVE' ? 'Kadrodasın ✅'
@@ -664,7 +700,7 @@ export default function MatchDetailsScreen({ route, navigation }: any) {
           </Text>
           <View style={styles.answerRow}>
             {([
-              { key: 'YES', label: 'Varım', icon: 'checkmark-circle', color: '#00E676', on: myStatus === 'ACTIVE' || myStatus === 'RESERVE' },
+              { key: 'YES', label: 'Varım', icon: 'checkmark-circle', color: '#00E676', on: inRoster },
               { key: 'MAYBE', label: 'Belki', icon: 'help-circle', color: '#FFC107', on: myStatus === 'MAYBE' },
               { key: 'NO', label: 'Yokum', icon: 'close-circle', color: '#F44336', on: myStatus === 'DECLINED' },
             ] as const).map((opt) => (
@@ -684,6 +720,28 @@ export default function MatchDetailsScreen({ route, navigation }: any) {
               </TouchableOpacity>
             ))}
           </View>
+        </View>
+      )}
+
+      {phase === 'locked' && (
+        <View style={styles.footer}>
+          <View style={styles.lockedBox}>
+            <Ionicons name="lock-closed" size={18} color="#94A3B8" />
+            <Text style={styles.lockedText}>
+              {myStatus === 'ACTIVE' ? 'Kadro kilitlendi, kadrodasın ✅ Gelemeyeceksen maçı kurana haber ver.'
+                : myStatus === 'RESERVE' ? 'Kadro kilitlendi, yedek listesindesin.'
+                : 'Kadro kilitlendi, artık değişiklik yapılamıyor.'}
+            </Text>
+          </View>
+        </View>
+      )}
+
+      {phase === 'started' && isManager && (
+        <View style={styles.footer}>
+          <TouchableOpacity style={styles.finishBtn} onPress={() => setFinishModalVisible(true)} activeOpacity={0.85}>
+            <Ionicons name="flag" size={20} color="#0F172A" />
+            <Text style={styles.finishBtnText}>Maçı bitir, skoru gir</Text>
+          </TouchableOpacity>
         </View>
       )}
       
@@ -762,21 +820,26 @@ export default function MatchDetailsScreen({ route, navigation }: any) {
           <View style={styles.modalContent}>
             <Text style={styles.modalTitle}>{ratingTarget?.name} Skorla!</Text>
             
+            <Text style={{ color: '#94A3B8', textAlign: 'center', marginBottom: 16 }}>Bu maçtaki performansına göre her özellik için bir seviye seç.</Text>
             {(['speed', 'shoot', 'pass', 'physique'] as const).map(skill => {
               const labelMap: any = { speed: 'Hız', shoot: 'Şut', pass: 'Pas', physique: 'Fizik' };
               return (
-                <View key={skill} style={styles.ratingRow}>
+                <View key={skill} style={{ marginBottom: 14 }}>
                   <Text style={styles.ratingLabel}>{labelMap[skill]}</Text>
-                  <TextInput 
-                    style={styles.ratingInput} 
-                    keyboardType="numeric" 
-                    value={String(ratingScores[skill])}
-                    onChangeText={(val) => {
-                      const num = parseInt(val) || 0;
-                      if(num >= 0 && num <= 99) setRatingScores(prev => ({...prev, [skill]: num}));
-                    }}
-                  />
-                  <Text style={{color:'#A0A0A0'}}>/ 99</Text>
+                  <View style={{ flexDirection: 'row', gap: 6, marginTop: 6 }}>
+                    {RATING_LEVELS.map((lvl) => {
+                      const on = ratingScores[skill] === lvl.value;
+                      return (
+                        <TouchableOpacity
+                          key={lvl.value}
+                          onPress={() => setRatingScores(prev => ({ ...prev, [skill]: lvl.value }))}
+                          style={[styles.levelChip, on && { backgroundColor: '#FFC107', borderColor: '#FFC107' }]}
+                        >
+                          <Text style={[styles.levelChipText, on && { color: '#0F172A' }]}>{lvl.label}</Text>
+                        </TouchableOpacity>
+                      );
+                    })}
+                  </View>
                 </View>
               );
             })}
@@ -923,7 +986,6 @@ const styles = StyleSheet.create({
   organizerRow: { flexDirection: "row", alignItems: "center" },
   organizerAvatar: { width: 30, height: 30, borderRadius: 15, backgroundColor: "rgba(0, 230, 118, 0.1)", justifyContent: "center", alignItems: "center", marginRight: 10, borderWidth: 1, borderColor: "rgba(0, 230, 118, 0.3)" },
   organizerText: { color: "#94A3B8", fontSize: 14 },
-  organizerName: { color: "#FFFFFF", fontWeight: "600" },
   sectionHeader: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginTop: 30, marginBottom: 15 },
   sectionTitle: { fontSize: 18, fontWeight: "bold", color: "#FFFFFF" },
   divideButton: { backgroundColor: 'rgba(255, 193, 7, 0.2)', paddingHorizontal: 12, paddingVertical: 6, borderRadius: 8, borderWidth: 1, borderColor: 'rgba(255, 193, 7, 0.5)' },
@@ -956,10 +1018,17 @@ const styles = StyleSheet.create({
   mvpBtn: { backgroundColor: '#FFD700', borderRadius: 12, paddingVertical: 12, paddingHorizontal: 24, marginTop: 12 },
   mvpBtnText: { color: '#0F172A', fontWeight: 'bold', fontSize: 15 },
   mvpHint: { color: '#94A3B8', fontSize: 12, marginTop: 10, textAlign: 'center' },
-  locationCard: { flexDirection: "row", alignItems: "center", backgroundColor: "#1E293B", borderRadius: 16, padding: 16, marginBottom: 20, borderWidth: 1, borderColor: "rgba(0, 230, 118, 0.2)" },
+  locationCard: { flexDirection: "row", alignItems: "center", backgroundColor: "#1E293B", borderRadius: 16, padding: 16, marginTop: 12, marginBottom: 20, borderWidth: 1, borderColor: "rgba(0, 230, 118, 0.2)" },
   locationName: { color: "#FFFFFF", fontSize: 16, fontWeight: "bold" },
   locationSub: { color: "#94A3B8", fontSize: 13, marginTop: 2 },
   footer: { position: "absolute", bottom: 0, left: 0, right: 0, paddingHorizontal: 20, paddingTop: 12, paddingBottom: 20, backgroundColor: "#0F172A", borderTopWidth: 1, borderTopColor: "rgba(255,255,255,0.08)" },
+  lockHint: { color: '#94A3B8', fontSize: 12, marginTop: 2 },
+  lockedBox: { flexDirection: 'row', alignItems: 'center', gap: 10, backgroundColor: 'rgba(148, 163, 184, 0.1)', borderRadius: 14, padding: 14 },
+  lockedText: { color: '#CBD5E1', fontSize: 14, flex: 1, lineHeight: 20 },
+  finishBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, backgroundColor: '#00E676', borderRadius: 14, paddingVertical: 16 },
+  finishBtnText: { color: '#0F172A', fontWeight: 'bold', fontSize: 16 },
+  levelChip: { flex: 1, paddingVertical: 10, borderRadius: 10, borderWidth: 1, borderColor: 'rgba(255,255,255,0.15)', alignItems: 'center', backgroundColor: 'rgba(255,255,255,0.04)' },
+  levelChipText: { color: '#E2E8F0', fontSize: 12, fontWeight: '600' },
   answerPrompt: { color: "#94A3B8", fontSize: 13, textAlign: "center", marginBottom: 10 },
   answerRow: { flexDirection: "row", gap: 10 },
   answerBtn: { flex: 1, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6, paddingVertical: 14, borderRadius: 14, borderWidth: 1.5 },
@@ -972,7 +1041,6 @@ const styles = StyleSheet.create({
   modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.8)', justifyContent: 'flex-end' },
   modalContent: { backgroundColor: '#1E293B', borderTopLeftRadius: 30, borderTopRightRadius: 30, padding: 25, paddingBottom: 40, borderTopWidth: 1, borderTopColor: 'rgba(0, 230, 118, 0.3)' },
   modalTitle: { fontSize: 20, fontWeight: 'bold', color: '#FFFFFF', marginBottom: 20, textAlign: 'center' },
-  ratingRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 15, backgroundColor: 'rgba(255,255,255,0.05)', padding: 15, borderRadius: 15 },
   ratingLabel: { color: '#FFF', fontSize: 16, fontWeight: 'bold', flex: 1 },
   ratingInput: { backgroundColor: 'rgba(0,0,0,0.3)', color: '#FFF', width: 60, textAlign: 'center', borderRadius: 8, height: 40, fontSize: 18, fontWeight: 'bold', marginRight: 10, borderWidth: 1, borderColor: '#FFC107' },
   saveBtn: { borderRadius: 16, overflow: 'hidden', marginBottom: 15, marginTop: 20 },

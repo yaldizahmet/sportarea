@@ -10,13 +10,15 @@ import {
   KeyboardAvoidingView, 
   Platform,
   Alert,
-  ScrollView
+  ScrollView,
+  ActivityIndicator,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
 import { StatusBar } from 'expo-status-bar';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { API_URL } from '../config/api';
+import { captureInviteFromUrl, getPendingInvite, previewInvite } from '../utils/invite';
 
 export default function AuthScreen({ navigation }: any) {
   const [email, setEmail] = useState('');
@@ -25,6 +27,12 @@ export default function AuthScreen({ navigation }: any) {
   const [isLogin, setIsLogin] = useState(true);
   const [loading, setLoading] = useState(false);
   const [focusedInput, setFocusedInput] = useState<string | null>(null);
+  // Kayıtlı oturum kontrolü sürerken giriş formu yerine açılış ekranı gösterilir.
+  // Render'ın ücretsiz sunucusu uykudaysa ilk istek 30-60 sn sürebilir.
+  const [checking, setChecking] = useState(true);
+  const [slowServer, setSlowServer] = useState(false);
+  const [checkFailed, setCheckFailed] = useState(false);
+  const [invite, setInvite] = useState<{ name: string; memberCount: number } | null>(null);
 
   // Animations
   const fadeAnim = useRef(new Animated.Value(0)).current;
@@ -67,25 +75,45 @@ export default function AuthScreen({ navigation }: any) {
     ]).start();
   }, [isLogin]);
 
-  useEffect(() => {
-    const checkToken = async () => {
-      try {
-        const token = await AsyncStorage.getItem('userToken');
-        if (token) {
-          const res = await apiFetch(`${API_URL}/me`, {
-            headers: { Authorization: `Bearer ${token}` }
-          });
-          const data = await res.json();
-          if (res.ok && data.user) {
-            navigation.replace('Dashboard', { user: data.user });
-          } else {
-            await AsyncStorage.removeItem('userToken');
-          }
-        }
-      } catch (e) {
-        console.log('Auto login error:', e);
+  const checkToken = async () => {
+    setCheckFailed(false);
+    setChecking(true);
+    const slowTimer = setTimeout(() => setSlowServer(true), 3500);
+    try {
+      const token = await AsyncStorage.getItem('userToken');
+      if (!token) return;
+      const res = await apiFetch(`${API_URL}/me`);
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data.user) {
+        navigation.replace('Dashboard', { user: data.user });
+        return;
       }
-    };
+      // Oturum geçersiz (süresi dolmuş vb.): girişe dön
+      await AsyncStorage.removeItem('userToken');
+    } catch (e) {
+      // Ağ hatası: oturumu silme, tekrar denemeyi teklif et
+      setCheckFailed(true);
+      return;
+    } finally {
+      clearTimeout(slowTimer);
+      setSlowServer(false);
+      setChecking(false);
+    }
+  };
+
+  useEffect(() => {
+    (async () => {
+      // Davet linkiyle gelindiyse grubu göster; yeni gelen büyük ihtimalle kayıt olacak.
+      await captureInviteFromUrl();
+      const code = await getPendingInvite();
+      if (code) {
+        const p = await previewInvite(code);
+        if (p) {
+          setInvite(p);
+          if (!(await AsyncStorage.getItem('userToken'))) setIsLogin(false);
+        }
+      }
+    })();
     checkToken();
   }, []);
 
@@ -142,6 +170,32 @@ export default function AuthScreen({ navigation }: any) {
     }
   };
 
+  if (checking || checkFailed) {
+    return (
+      <View style={[styles.container, { justifyContent: 'center', alignItems: 'center', padding: 30 }]}>
+        <StatusBar style="light" />
+        <LinearGradient colors={['#0F2027', '#203A43', '#2C5364']} style={StyleSheet.absoluteFillObject} />
+        <Ionicons name="football" size={64} color="#00E676" />
+        <Text style={[styles.title, { marginTop: 16 }]}>SporArea</Text>
+        {checkFailed ? (
+          <>
+            <Text style={styles.splashText}>Sunucuya ulaşılamadı. İnternet bağlantını kontrol edip tekrar dene.</Text>
+            <TouchableOpacity style={styles.retryButton} onPress={checkToken}>
+              <Text style={styles.retryButtonText}>Tekrar dene</Text>
+            </TouchableOpacity>
+          </>
+        ) : (
+          <>
+            <ActivityIndicator color="#00E676" style={{ marginTop: 24 }} />
+            <Text style={styles.splashText}>
+              {slowServer ? 'Sunucu uyanıyor, ilk açılış yarım dakika kadar sürebilir…' : 'Giriş yapılıyor…'}
+            </Text>
+          </>
+        )}
+      </View>
+    );
+  }
+
   return (
     <View style={styles.container}>
       <StatusBar style="light" />
@@ -174,6 +228,16 @@ export default function AuthScreen({ navigation }: any) {
             <Text style={styles.title}>SporArea</Text>
             <Text style={styles.subtitle}>Sahanın Hakimi Ol</Text>
           </Animated.View>
+
+          {invite && (
+            <View style={styles.inviteBanner}>
+              <Ionicons name="people" size={22} color="#00E676" />
+              <Text style={styles.inviteBannerText}>
+                <Text style={{ fontWeight: 'bold', color: '#FFFFFF' }}>{invite.name}</Text> grubuna davet edildin
+                {invite.memberCount ? ` (${invite.memberCount} kişi)` : ''}. {isLogin ? 'Giriş yap' : 'Kayıt ol'}, gruba otomatik katılacaksın.
+              </Text>
+            </View>
+          )}
 
           <Animated.View 
             style={[
@@ -267,6 +331,11 @@ export default function AuthScreen({ navigation }: any) {
 }
 
 const styles = StyleSheet.create({
+  splashText: { color: '#CBD5E1', fontSize: 15, textAlign: 'center', marginTop: 16, lineHeight: 22, maxWidth: 320 },
+  retryButton: { backgroundColor: '#00E676', borderRadius: 14, paddingVertical: 14, paddingHorizontal: 32, marginTop: 24 },
+  retryButtonText: { color: '#0F172A', fontWeight: 'bold', fontSize: 16 },
+  inviteBanner: { flexDirection: 'row', alignItems: 'center', gap: 12, backgroundColor: 'rgba(0, 230, 118, 0.12)', borderWidth: 1, borderColor: 'rgba(0, 230, 118, 0.4)', borderRadius: 16, padding: 14, marginBottom: 20 },
+  inviteBannerText: { flex: 1, color: '#CBD5E1', fontSize: 14, lineHeight: 20 },
   container: {
     flex: 1,
     backgroundColor: '#121212',
