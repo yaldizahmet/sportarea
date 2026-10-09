@@ -387,7 +387,9 @@ app.get('/api/me', async (req, res) => {
 app.get('/api/groups', async (req, res) => {
   try {
     const groups = await db.all(`
-      SELECT g.*, gm."isAdmin" AS "myIsAdmin" FROM "Groups" g
+      SELECT g.*, gm."isAdmin" AS "myIsAdmin",
+        (SELECT COUNT(*) FROM "GroupMembers" x WHERE x."groupId" = g.id) AS "memberCount"
+      FROM "Groups" g
       JOIN "GroupMembers" gm ON g.id = gm."groupId"
       WHERE gm."userId" = ?
       ORDER BY g."createdAt" DESC

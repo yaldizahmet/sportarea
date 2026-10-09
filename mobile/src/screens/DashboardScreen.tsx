@@ -508,6 +508,14 @@ export default function DashboardScreen({ route, navigation }: any) {
           {groups.length === 0 ? null : (
             groups.map((group) => {
               const weekly = formatWeekly(group.weeklyDay, group.weeklyTime);
+              // Grubun sıradaki (iptal edilmemiş) maçı; haftalık ayar yoksa kartta bu gösterilir.
+              const next = upcomingMatches.find((m) => m.groupId === group.id && m.status !== 'CANCELLED');
+              const members = group.memberCount ? `${group.memberCount} üye` : '';
+              const subtitle = weekly
+                ? `${weekly} · ${group.weeklyLocation}`
+                : next
+                  ? `Sıradaki maç: ${formatMatchDate(next)}`
+                  : `${members ? `${members} · ` : ''}Yaklaşan maç yok`;
               return (
                 <TouchableOpacity
                   key={group.id}
@@ -521,7 +529,7 @@ export default function DashboardScreen({ route, navigation }: any) {
                   <View style={styles.rowMainInfo}>
                     <Text style={styles.rowTitle} numberOfLines={1}>{group.name}</Text>
                     <Text style={styles.rowSubtitle} numberOfLines={1}>
-                      {weekly ? `${weekly} · ${group.weeklyLocation}` : 'Haftalık maç ayarlanmadı'}
+                      {subtitle}
                     </Text>
                   </View>
                   <View style={styles.rowRightSection}>
