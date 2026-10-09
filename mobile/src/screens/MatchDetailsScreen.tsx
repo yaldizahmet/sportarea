@@ -234,7 +234,13 @@ export default function MatchDetailsScreen({ route, navigation }: any) {
       return;
     }
     setRatingTarget(player);
-    setRatingScores({ speed: null, shoot: null, pass: null, physique: null });
+    // Daha önce puanladıysa verdiği puanlar seçili gelir (değiştirip tekrar kaydedebilir).
+    setRatingScores({
+      speed: player.mySpeed ?? null,
+      shoot: player.myShoot ?? null,
+      pass: player.myPass ?? null,
+      physique: player.myPhysique ?? null,
+    });
     setRatingModalVisible(true);
   };
 
@@ -258,7 +264,12 @@ export default function MatchDetailsScreen({ route, navigation }: any) {
        });
        if(res.ok) {
          setRatingModalVisible(false);
-         Alert.alert('Başarılı', `${displayName(ratingTarget)} adlı oyuncuyu puanladınız!`);
+         // Kartta hemen "✓ Puanladın" görünsün; ortalamalar için listeyi tazele.
+         const r = ratingScores;
+         setPlayers((prev) => prev.map((p: any) => p.id === ratingTarget.id
+           ? { ...p, mySpeed: r.speed, myShoot: r.shoot, myPass: r.pass, myPhysique: r.physique }
+           : p));
+         fetchPlayers();
        } else {
          const d = await res.json();
          Alert.alert('Hata', d.error || 'Puanlama yapılamadı.');
@@ -544,6 +555,10 @@ export default function MatchDetailsScreen({ route, navigation }: any) {
   // Benim cevabım: ACTIVE / RESERVE (varım), MAYBE, DECLINED, PENDING ya da listede yoksam null
   const myStatus: string | null = players.find((p: any) => p.id === user.id)?.status ?? null;
   const iPlayed = isCompleted && myStatus === 'ACTIVE';
+  // Puanlama ilerlemesi: bu maçta oynayan diğer oyunculardan kaçını puanladım
+  const rateable = iPlayed ? players.filter((p: any) => p.status === 'ACTIVE' && p.id !== user.id) : [];
+  const rateTotal = rateable.length;
+  const rateDone = rateable.filter((p: any) => p.mySpeed != null).length;
 
   // Maçın aşaması: açık -> kilitli (son değişiklik saati geçti) -> başladı -> tamamlandı
   const ts = Number(matchTimestamp) || 0;
@@ -695,6 +710,7 @@ export default function MatchDetailsScreen({ route, navigation }: any) {
   const renderPlayerCard = (player: any, idx: number, badgeText: string, badgeStyle: any, textStyle: any) => {
     // Puanlama: maç bitti, ben oynadım, o da oynadı ve kendim değilim.
     const canRate = iPlayed && player.status === 'ACTIVE' && player.id !== user.id;
+    const rated = canRate && player.mySpeed != null;
     const Wrapper: any = canRate ? TouchableOpacity : View;
 
     return (
@@ -710,7 +726,13 @@ export default function MatchDetailsScreen({ route, navigation }: any) {
             ) : (
               <Text style={styles.playerPosition} numberOfLines={1}>{realNameHint(player) ? `${realNameHint(player)} · ` : ''}{String(player.position || "Orta Saha")}</Text>
             )}
-            {player.goals > 0 && <Text style={{color: '#00E676', fontSize: 12, marginTop: 3, fontWeight: 'bold'}}>⚽ {player.goals} Gol</Text>}
+            {(player.goals > 0 || (isCompleted && player.matchRating != null)) && (
+              <Text style={{color: '#00E676', fontSize: 12, marginTop: 3, fontWeight: 'bold'}}>
+                {player.goals > 0 ? `⚽ ${player.goals} Gol` : ''}
+                {player.goals > 0 && isCompleted && player.matchRating != null ? '  ' : ''}
+                {isCompleted && player.matchRating != null ? <Text style={{ color: '#FFC107' }}>⭐ {player.matchRating} <Text style={{ color: '#94A3B8', fontWeight: 'normal' }}>({player.matchRatingCount} kişi)</Text></Text> : null}
+              </Text>
+            )}
             {pitchFee && !isCancelled && player.status === 'ACTIVE' ? (
               isManager ? (
                 <TouchableOpacity onPress={() => togglePaid(player)} style={[styles.paidChip, player.paid && styles.paidChipOn]} hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}>
@@ -723,9 +745,9 @@ export default function MatchDetailsScreen({ route, navigation }: any) {
           </View>
         </View>
         <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-          <View style={[styles.statusBadge, canRate ? {backgroundColor: 'rgba(255, 193, 7, 0.2)'} : badgeStyle]}>
-            <Text style={[styles.statusText, canRate ? {color: '#FFC107'} : textStyle]}>
-              {canRate ? 'Puanla ⭐' : isCompleted && player.id === user.id ? 'Sen' : String(badgeText)}
+          <View style={[styles.statusBadge, rated ? { backgroundColor: 'rgba(0, 230, 118, 0.15)' } : canRate ? {backgroundColor: 'rgba(255, 193, 7, 0.2)'} : badgeStyle]}>
+            <Text style={[styles.statusText, rated ? { color: '#00E676' } : canRate ? {color: '#FFC107'} : textStyle]}>
+              {rated ? '✓ Puanladın' : canRate ? 'Puanla ⭐' : isCompleted && player.id === user.id ? 'Sen' : String(badgeText)}
             </Text>
           </View>
           {player.isGuest && !isCompleted && (player.invitedBy === user.id || isManager) ? (
@@ -896,7 +918,11 @@ export default function MatchDetailsScreen({ route, navigation }: any) {
                     <Text style={styles.mvpBtnText}>MVP'ye oy ver</Text>
                   </TouchableOpacity>
                 )}
-                <Text style={styles.mvpHint}>Takım arkadaşlarını puanlamak için aşağıda isimlerine dokun.</Text>
+                <Text style={styles.mvpHint}>
+                  {rateTotal > 0 && rateDone === rateTotal
+                    ? `✓ ${rateTotal} oyuncunun hepsini puanladın. İstersen dokunup değiştirebilirsin.`
+                    : `Takım arkadaşlarını puanlamak için aşağıda isimlerine dokun (${rateDone}/${rateTotal} puanladın).`}
+                </Text>
               </>
             ) : (
               <Text style={styles.mvpHint}>Oy ve puanı sadece bu maçta oynayanlar verebilir.</Text>

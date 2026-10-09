@@ -1397,13 +1397,27 @@ app.get('/api/matches/:id/players', async (req, res) => {
     const { id } = req.params;
     const players: any[] = await db.all(`
       SELECT u.id, u.name, u.nickname, u.avatar, u.position, mp.team, mp.goals, mp.status, mp.paid,
-             (u.role = 'GUEST') AS "isGuest", mp."invitedBy", inv.name AS "invitedByName", inv.nickname AS "invitedByNickname"
+             (u.role = 'GUEST') AS "isGuest", mp."invitedBy", inv.name AS "invitedByName", inv.nickname AS "invitedByNickname",
+             myr.speed AS "mySpeed", myr.shoot AS "myShoot", myr.pass AS "myPass", myr.physique AS "myPhysique",
+             mr.avg AS "matchRatingRaw", COALESCE(mr.c, 0) AS "matchRatingCount"
       FROM "MatchPlayers" mp
       JOIN "User" u ON mp."userId" = u.id
       LEFT JOIN "User" inv ON inv.id = mp."invitedBy"
+      -- Benim bu maçta bu oyuncuya verdiğim puan (tekrar açınca seçili gelsin diye)
+      LEFT JOIN "Ratings" myr ON myr."matchId" = mp."matchId" AND myr."raterId" = ? AND myr."ratedId" = u.id
+      -- Bu maçta aldığı puanların ortalaması
+      LEFT JOIN (
+        SELECT "ratedId", ROUND((AVG(speed) + AVG(shoot) + AVG(pass) + AVG(physique)) / 4) AS avg, COUNT(*) AS c
+        FROM "Ratings" WHERE "matchId" = ? GROUP BY "ratedId"
+      ) mr ON mr."ratedId" = u.id
       WHERE mp."matchId" = ?
       ORDER BY mp."joinedAt" ASC
-    `, [id]);
+    `, [req.user.id, id, id]);
+    // Gizlilik: tek kişi puanladıysa ortalama gösterilmez (kimin ne verdiği anlaşılmasın).
+    for (const p of players) {
+      p.matchRating = p.matchRatingCount >= 2 ? Number(p.matchRatingRaw) : null;
+      delete p.matchRatingRaw;
+    }
 
     const matchRow = await db.get('SELECT "groupId", "creatorId" FROM "Matches" WHERE id = ?', [id]);
     if (matchRow && matchRow.groupId) {
