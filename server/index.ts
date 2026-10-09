@@ -1103,6 +1103,90 @@ app.get('/api/matches/:id', async (req, res) => {
   }
 });
 
+// Maçı düzenle (saha, gün/saat, kişi sayısı, kilit süresi). Sadece maçı yöneten, maç bitmeden.
+// Haftalık otomatik maçta sadece o haftanın maçı değişir; grubun haftalık ayarı aynı kalır.
+const matchDateLabel = (ts: number) => {
+  const d = new Date(ts + TR_OFFSET_MS);
+  const h = d.getUTCHours();
+  const day = new Date(d.getTime() - (h < 6 ? 86400000 : 0));
+  const hhmm = `${String(h).padStart(2, '0')}:${String(d.getUTCMinutes()).padStart(2, '0')}`;
+  return { label: `${day.getUTCDate()}/${day.getUTCMonth() + 1} ${DAY_SHORT[day.getUTCDay()]}, ${hhmm}`, time: hhmm };
+};
+
+app.put('/api/matches/:id', async (req, res) => {
+  try {
+    const matchId = req.params.id;
+    const perm = await canManageMatch(matchId, req.user.id);
+    if (!perm.exists) return res.status(404).json({ error: 'Maç bulunamadı.' });
+    if (!perm.allowed) return res.status(403).json({ error: 'Maçı sadece kuran kişi ya da grup kurucusu düzenleyebilir.' });
+
+    const location = String(req.body?.location ?? '').trim().replace(/\s+/g, ' ');
+    const ts = Number(req.body?.matchTimestamp);
+    const maxPlayers = Number(req.body?.maxPlayers);
+    const lockoutHours = Number(req.body?.lockoutHours);
+    if (location.length < 2 || location.length > 80) return res.status(400).json({ error: 'Saha adını yaz (2-80 karakter).' });
+    if (!Number.isInteger(maxPlayers) || maxPlayers < 2 || maxPlayers > 50) return res.status(400).json({ error: 'Kişi sayısı 2 ile 50 arasında olmalı.' });
+    if (!Number.isInteger(lockoutHours) || lockoutHours < 0 || lockoutHours > 48) return res.status(400).json({ error: 'Kilit süresi 0 ile 48 saat arasında olmalı.' });
+    if (!Number.isFinite(ts) || ts <= 0) return res.status(400).json({ error: 'Geçerli bir gün ve saat seç.' });
+
+    const pushes: PushMessage[] = [];
+    const result = await tx(async (t) => {
+      const m = await t.get(
+        `SELECT m.*, g.name AS "groupName" FROM "Matches" m LEFT JOIN "Groups" g ON g.id = m."groupId" WHERE m.id = ? FOR UPDATE OF m`,
+        [matchId]
+      );
+      if (m.status === 'COMPLETED') return { status: 400, body: { error: 'Tamamlanmış maç düzenlenemez.' } };
+      const timeChanged = Number(m.matchTimestamp) !== ts;
+      if (timeChanged && ts < Date.now()) return { status: 400, body: { error: 'Seçtiğin gün ve saat geçmişte kalıyor.' } };
+
+      const active = await t.get(`SELECT COUNT(*) AS c FROM "MatchPlayers" WHERE "matchId" = ? AND status = 'ACTIVE'`, [matchId]);
+      if (maxPlayers < active.c) {
+        return { status: 400, body: { error: `Kadroda şu an ${active.c} kişi var; kişi sayısını bundan aza düşüremezsin.` } };
+      }
+
+      const { label, time } = matchDateLabel(ts);
+      await t.run(
+        `UPDATE "Matches" SET location = ?, "matchTimestamp" = ?, date = ?, time = ?, "maxPlayers" = ?, "lockoutHours" = ?,
+           "reminderSentAt" = CASE WHEN ? THEN NULL ELSE "reminderSentAt" END
+         WHERE id = ?`,
+        [location, ts, label, time, maxPlayers, lockoutHours, timeChanged, matchId]
+      );
+
+      // Kişi sayısı arttıysa yedekler sırayla kadroya geçer.
+      const updated = { ...m, location, matchTimestamp: ts };
+      const reserves = await t.get(`SELECT COUNT(*) AS c FROM "MatchPlayers" WHERE "matchId" = ? AND status = 'RESERVE'`, [matchId]);
+      const toPromote = Math.min(maxPlayers - active.c, reserves.c);
+      for (let i = 0; i < toPromote; i++) await promoteFirstReserve(t, matchId, updated, pushes);
+
+      // Saha ya da zaman değiştiyse gruptaki herkese haber ver.
+      const placeChanged = m.location !== location;
+      if ((timeChanged || placeChanged) && m.groupId) {
+        const what = [timeChanged ? friendlyMatchTime(ts) : null, placeChanged ? location : null].filter(Boolean).join(' · ');
+        const members = await t.all('SELECT "userId" FROM "GroupMembers" WHERE "groupId" = ? AND "userId" <> ?', [m.groupId, req.user.id]);
+        for (const mem of members) {
+          await t.run('INSERT INTO "Notifications" (id, "userId", message, type, metadata) VALUES (?, ?, ?, ?, ?)', [
+            randomUUID(), mem.userId,
+            `${m.groupName || 'Grubun'}: maç bilgisi değişti → ${what}`,
+            'INFO', JSON.stringify({ matchId }),
+          ]);
+          pushes.push({
+            userId: mem.userId,
+            title: `Maç değişti · ${m.groupName || 'SporArea'}`,
+            body: `Yeni bilgi: ${what}`,
+            data: { matchId },
+          });
+        }
+      }
+      return { status: 200, body: { message: 'Maç güncellendi.' } };
+    });
+    sendPushInBackground(pushes);
+    res.status(result.status).json(result.body);
+  } catch (e) {
+    console.error('Edit match error:', e);
+    res.status(500).json({ error: 'Maç güncellenemedi.' });
+  }
+});
+
 app.delete('/api/matches/:id', async (req, res) => {
   try {
     const { id } = req.params;

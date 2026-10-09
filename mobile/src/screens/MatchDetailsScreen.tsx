@@ -19,7 +19,20 @@ import { LinearGradient } from "expo-linear-gradient";
 import { Ionicons } from "@expo/vector-icons";
 import { StatusBar } from "expo-status-bar";
 import { API_URL } from "../config/api";
-import { formatMatchDate, formatClock, formatMoney, shareOf } from "../utils/format";
+import { formatMatchDate, formatClock, formatMoney, shareOf, DAY_NAMES_SHORT } from "../utils/format";
+
+const EDIT_HOURS = ['18:00', '19:00', '20:00', '21:00', '22:00', '23:00', '00:00'];
+const EDIT_LOCKOUTS = [0, 1, 3, 6, 12];
+const MONTHS_SHORT = ['Oca', 'Şub', 'Mar', 'Nis', 'May', 'Haz', 'Tem', 'Ağu', 'Eyl', 'Eki', 'Kas', 'Ara'];
+const pad2 = (n: number) => String(n).padStart(2, '0');
+const startOfDay = (d: Date) => new Date(d.getFullYear(), d.getMonth(), d.getDate());
+// Önümüzdeki 21 gün (bugün dahil), düzenleme penceresindeki gün seçimi için.
+const upcomingDays = () => {
+  const today = startOfDay(new Date());
+  return Array.from({ length: 21 }, (_, i) => new Date(today.getFullYear(), today.getMonth(), today.getDate() + i));
+};
+const dayLabel = (d: Date, i: number) =>
+  i === 0 ? 'Bugün' : i === 1 ? 'Yarın' : `${DAY_NAMES_SHORT[d.getDay()]} ${d.getDate()} ${MONTHS_SHORT[d.getMonth()]}`;
 
 const getCoordinates = (team: any[], isTeamA: boolean) => {
   const width = 320;
@@ -101,6 +114,13 @@ export default function MatchDetailsScreen({ route, navigation }: any) {
   // Saha ücreti
   const [feeModal, setFeeModal] = useState(false);
   const [guestModal, setGuestModal] = useState(false);
+  const [editModal, setEditModal] = useState(false);
+  const [editLocation, setEditLocation] = useState('');
+  const [editDay, setEditDay] = useState<Date | null>(null);
+  const [editTime, setEditTime] = useState('21:00');
+  const [editMax, setEditMax] = useState('14');
+  const [editLock, setEditLock] = useState(3);
+  const [editBusy, setEditBusy] = useState(false);
   const [guestName, setGuestName] = useState('');
   const [guestBusy, setGuestBusy] = useState(false);
   const [feeInput, setFeeInput] = useState('');
@@ -482,6 +502,50 @@ export default function MatchDetailsScreen({ route, navigation }: any) {
     }
   };
 
+  // Maçı düzenle: mevcut bilgilerle pencereyi doldur. Gece maçı (00:00-05:59) bir önceki günün gecesi sayılır.
+  const openEdit = () => {
+    const ts = Number(matchTimestamp) || Date.now();
+    const d = new Date(ts);
+    const shown = new Date(d);
+    if (d.getHours() < 6) shown.setDate(shown.getDate() - 1);
+    setEditLocation(String(matchInfo.location || ''));
+    setEditDay(startOfDay(shown));
+    setEditTime(`${pad2(d.getHours())}:${pad2(d.getMinutes())}`);
+    setEditMax(String(matchInfo.maxPlayers || 14));
+    setEditLock(Number(matchInfo.lockoutHours ?? 3));
+    setEditModal(true);
+  };
+  const saveEdit = async () => {
+    if (!editDay) return;
+    const [h, min] = editTime.split(':').map((x) => parseInt(x, 10));
+    const start = new Date(editDay);
+    if (h < 6) start.setDate(start.getDate() + 1);
+    start.setHours(h, min, 0, 0);
+    setEditBusy(true);
+    try {
+      const res = await apiFetch(`${API_URL}/matches/${matchInfo.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          location: editLocation,
+          matchTimestamp: start.getTime(),
+          maxPlayers: parseInt(editMax, 10),
+          lockoutHours: editLock,
+        }),
+      });
+      const data = await res.json();
+      if (res.ok) {
+        setEditModal(false);
+        await Promise.all([fetchMatchInfo(), fetchPlayers()]);
+      } else Alert.alert('Olmadı', data.error || 'Kaydedilemedi.');
+    } catch (e) {
+      Alert.alert('Hata', 'Bağlantı sorunu yaşandı.');
+    }
+    setEditBusy(false);
+  };
+  const editHours = EDIT_HOURS.includes(editTime) ? EDIT_HOURS : [editTime, ...EDIT_HOURS];
+  const editLocks = EDIT_LOCKOUTS.includes(editLock) ? EDIT_LOCKOUTS : [...EDIT_LOCKOUTS, editLock].sort((a, b) => a - b);
+
   // Misafir: yanında getirdiğin, uygulamayı kullanmayan arkadaş. Adını yazman yeterli.
   const myGuests = players.filter((p: any) => p.isGuest && p.invitedBy === user.id);
   const addGuest = async () => {
@@ -602,6 +666,12 @@ export default function MatchDetailsScreen({ route, navigation }: any) {
         <LinearGradient colors={["#1E293B", "#0F172A"]} style={styles.infoCard}>
           <View style={styles.infoTop}>
             <Text style={styles.matchTitle}>{String(matchInfo.location || "Bilinmeyen Saha")}</Text>
+            {isManager && !isCompleted ? (
+              <TouchableOpacity onPress={openEdit} style={styles.editBtn} accessibilityLabel="Maçı düzenle" hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+                <Ionicons name="create-outline" size={18} color="#00E676" />
+                <Text style={styles.editBtnText}>Düzenle</Text>
+              </TouchableOpacity>
+            ) : null}
           </View>
           <View style={styles.infoRow}>
             <Ionicons name="calendar-outline" size={20} color="#00E676" style={styles.infoIcon} />
@@ -926,6 +996,82 @@ export default function MatchDetailsScreen({ route, navigation }: any) {
         </View>
       </Modal>
 
+      <Modal visible={editModal} transparent animationType="slide" onRequestClose={() => setEditModal(false)}>
+        <View style={styles.modalOverlay}>
+          <View style={[styles.modalContent, { maxHeight: '90%' }]}>
+            <ScrollView showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
+              <Text style={styles.modalTitle}>Maçı düzenle</Text>
+              {matchInfo.groupId ? (
+                <Text style={{ color: '#94A3B8', textAlign: 'center', marginBottom: 12, fontSize: 13 }}>
+                  Sadece bu maç değişir. Her haftaki maçı değiştirmek için grubun "Haftalık maç" ayarını kullan. Saha ya da saat değişirse gruba bildirim gider.
+                </Text>
+              ) : null}
+
+              <Text style={styles.editLabel}>Saha</Text>
+              <TextInput
+                style={[styles.feeInput, { textAlign: 'left', fontSize: 16, fontWeight: '600', width: '100%' }]}
+                value={editLocation}
+                onChangeText={setEditLocation}
+                placeholder="Örn: Olimpik Halı Saha"
+                placeholderTextColor="#64748B"
+                maxLength={80}
+              />
+
+              <Text style={styles.editLabel}>Gün</Text>
+              <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginBottom: 12 }}>
+                {upcomingDays().map((d, i) => {
+                  const on = editDay?.getTime() === d.getTime();
+                  return (
+                    <TouchableOpacity key={d.getTime()} onPress={() => setEditDay(d)} style={[styles.editChip, on && styles.editChipOn]}>
+                      <Text style={[styles.editChipText, on && { color: '#0F172A' }]}>{dayLabel(d, i)}</Text>
+                    </TouchableOpacity>
+                  );
+                })}
+              </ScrollView>
+
+              <Text style={styles.editLabel}>Saat</Text>
+              <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginBottom: 4 }}>
+                {editHours.map((h) => (
+                  <TouchableOpacity key={h} onPress={() => setEditTime(h)} style={[styles.editChip, editTime === h && styles.editChipOn]}>
+                    <Text style={[styles.editChipText, editTime === h && { color: '#0F172A' }]}>{h}</Text>
+                  </TouchableOpacity>
+                ))}
+              </ScrollView>
+              {parseInt(editTime, 10) < 6 && editDay ? (
+                <Text style={{ color: '#94A3B8', fontSize: 12, marginBottom: 8 }}>{DAY_NAMES_SHORT[editDay.getDay()]} gecesi {editTime} (takvimde ertesi gün)</Text>
+              ) : <View style={{ height: 8 }} />}
+
+              <Text style={styles.editLabel}>Kişi sayısı</Text>
+              <TextInput
+                style={[styles.feeInput, { textAlign: 'left', fontSize: 16, width: '100%' }]}
+                value={editMax}
+                onChangeText={(t) => setEditMax(t.replace(/[^0-9]/g, ''))}
+                keyboardType="numeric"
+                maxLength={2}
+              />
+
+              <Text style={styles.editLabel}>Son değişiklik (maçtan kaç saat önce kilitlensin)</Text>
+              <View style={{ flexDirection: 'row', flexWrap: 'wrap', marginBottom: 12 }}>
+                {editLocks.map((h) => (
+                  <TouchableOpacity key={h} onPress={() => setEditLock(h)} style={[styles.editChip, editLock === h && styles.editChipOn]}>
+                    <Text style={[styles.editChipText, editLock === h && { color: '#0F172A' }]}>{h === 0 ? 'Kilitleme' : `${h} sa`}</Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+
+              <TouchableOpacity style={[styles.saveBtn, editBusy && { opacity: 0.6 }]} onPress={saveEdit} disabled={editBusy}>
+                <LinearGradient colors={['#00C853', '#B2FF59']} start={{x: 0, y: 0}} end={{x: 1, y: 0}} style={styles.saveBtnGradient}>
+                  <Text style={styles.saveBtnText}>{editBusy ? 'KAYDEDİLİYOR…' : 'KAYDET'}</Text>
+                </LinearGradient>
+              </TouchableOpacity>
+              <TouchableOpacity style={styles.cancelBtn} onPress={() => setEditModal(false)}>
+                <Text style={[styles.cancelBtnText, { color: '#CBD5E1' }]}>Vazgeç</Text>
+              </TouchableOpacity>
+            </ScrollView>
+          </View>
+        </View>
+      </Modal>
+
       <Modal visible={guestModal} transparent animationType="fade" onRequestClose={() => setGuestModal(false)}>
         <View style={styles.modalOverlay}>
           <View style={styles.modalContent}>
@@ -1209,6 +1355,12 @@ const styles = StyleSheet.create({
   organizerAvatar: { width: 30, height: 30, borderRadius: 15, backgroundColor: "rgba(0, 230, 118, 0.1)", justifyContent: "center", alignItems: "center", marginRight: 10, borderWidth: 1, borderColor: "rgba(0, 230, 118, 0.3)" },
   organizerText: { color: "#94A3B8", fontSize: 14 },
   sectionHeader: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginTop: 30, marginBottom: 15 },
+  editBtn: { flexDirection: 'row', alignItems: 'center', gap: 4, paddingVertical: 6, paddingHorizontal: 10, borderRadius: 10, backgroundColor: 'rgba(0, 230, 118, 0.1)', marginLeft: 10 },
+  editBtnText: { color: '#00E676', fontWeight: '600', fontSize: 13 },
+  editLabel: { color: '#94A3B8', fontSize: 13, marginBottom: 6, marginTop: 4 },
+  editChip: { backgroundColor: 'rgba(255,255,255,0.06)', borderRadius: 10, paddingHorizontal: 12, paddingVertical: 9, marginRight: 8, marginBottom: 6, borderWidth: 1, borderColor: 'rgba(255,255,255,0.06)' },
+  editChipOn: { backgroundColor: '#00E676', borderColor: '#00E676' },
+  editChipText: { color: '#E2E8F0', fontWeight: '600', fontSize: 14 },
   guestLine: { color: '#38BDF8', fontSize: 12, marginTop: 2 },
   guestBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, borderWidth: 1, borderStyle: 'dashed', borderColor: 'rgba(0, 230, 118, 0.45)', borderRadius: 12, paddingVertical: 11, marginBottom: 14 },
   guestBtnText: { color: '#00E676', fontWeight: '600', fontSize: 14 },
