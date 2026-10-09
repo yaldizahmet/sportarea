@@ -153,7 +153,7 @@ export default function DashboardScreen({ route, navigation }: any) {
     .filter((m) => isPastMatch(m))
     .sort((a, b) => Number(b.matchTimestamp) - Number(a.matchTimestamp))
     .slice(0, 10);
-  const unanswered = upcomingMatches.filter((m) => !m.myStatus);
+  const unanswered = upcomingMatches.filter((m) => !m.myStatus && m.status !== 'CANCELLED');
 
   const handleOpenNotifications = async () => {
     setIsNotificationsVisible(true);
@@ -323,19 +323,20 @@ export default function DashboardScreen({ route, navigation }: any) {
   };
 
   const renderMatchCard = (match: any, past: boolean) => {
+    const cancelled = match.status === 'CANCELLED';
     const s = MY_STATUS_BADGE[match.myStatus ?? 'NONE'] ?? MY_STATUS_BADGE.NONE;
     // Oynadığım, ücreti olan ve henüz ödemediğim geçmiş maç: payımı göster
-    const owe = past && match.myStatus === 'ACTIVE' && match.pitchFee && match.myPaid === false
+    const owe = past && !cancelled && match.myStatus === 'ACTIVE' && match.pitchFee && match.myPaid === false
       ? shareOf(match.pitchFee, Number(match.activeCount)) : null;
     return (
       <TouchableOpacity
         key={match.id}
         activeOpacity={0.8}
-        style={[styles.singleRowCard, past && { opacity: 0.85 }]}
+        style={[styles.singleRowCard, (past || cancelled) && { opacity: cancelled ? 0.6 : 0.85 }]}
         onPress={() => navigation.navigate("MatchDetails", { match, user })}
       >
-        <View style={[styles.rowIconContainer, { borderColor: past ? 'rgba(255, 193, 7, 0.3)' : 'rgba(0, 230, 118, 0.3)' }]}>
-          <Ionicons name={past ? "trophy" : "football"} size={20} color={past ? "#FFC107" : "#00E676"} />
+        <View style={[styles.rowIconContainer, { borderColor: cancelled ? 'rgba(244, 67, 54, 0.35)' : past ? 'rgba(255, 193, 7, 0.3)' : 'rgba(0, 230, 118, 0.3)' }]}>
+          <Ionicons name={cancelled ? "close" : past ? "trophy" : "football"} size={20} color={cancelled ? "#F87171" : past ? "#FFC107" : "#00E676"} />
         </View>
 
         <View style={styles.rowMainInfo}>
@@ -353,7 +354,11 @@ export default function DashboardScreen({ route, navigation }: any) {
               <Text style={[styles.miniBadgeText, { color: '#FB7185', fontWeight: 'bold' }]}>💸 {formatMoney(owe)}</Text>
             </View>
           ) : null}
-          {past ? (
+          {cancelled ? (
+            <View style={[styles.miniBadge, { backgroundColor: 'rgba(244, 67, 54, 0.12)', borderColor: 'rgba(244, 67, 54, 0.45)' }]}>
+              <Text style={[styles.miniBadgeText, { color: '#F87171', fontWeight: 'bold' }]}>İptal</Text>
+            </View>
+          ) : past ? (
             <View style={[styles.miniBadge, { backgroundColor: 'rgba(255, 193, 7, 0.15)', borderColor: 'rgba(255, 193, 7, 0.4)' }]}>
               <Text style={[styles.miniBadgeText, { color: '#FFC107', fontWeight: 'bold' }]}>
                 {match.score ? match.score : match.status === 'COMPLETED' ? 'Bitti' : 'Sonuç yok'}

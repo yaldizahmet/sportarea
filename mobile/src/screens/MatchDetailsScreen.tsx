@@ -365,8 +365,8 @@ export default function MatchDetailsScreen({ route, navigation }: any) {
         });
         const data = await res.json();
         if (res.ok) {
-          Alert.alert("Başarılı", "Maç başarıyla iptal edildi.");
-          navigation.goBack();
+          setMatchStatus('CANCELLED');
+          fetchMatchInfo();
         } else {
           Alert.alert("Hata", data.error || "Maç iptal edilemedi.");
         }
@@ -376,18 +376,32 @@ export default function MatchDetailsScreen({ route, navigation }: any) {
     };
 
     if (Platform.OS === 'web') {
-      if (window.confirm("Bu maçı iptal etmek ve tüm kadro bilgilerini kalıcı olarak silmek istediğinize emin misiniz?")) {
+      if (window.confirm("Maç iptal edilsin mi? Kadro kayıtlı kalır, gruba iptal bildirimi gider.")) {
         await performCancel();
       }
     } else {
       Alert.alert(
         "Maçı İptal Et ❌",
-        "Bu maçı iptal etmek ve tüm kadro bilgilerini silmek istediğinize emin misiniz?",
+        "Maç iptal edilsin mi? Kadro kayıtlı kalır, gruba iptal bildirimi gider. Maç saati geçmeden geri alabilirsin.",
         [
           { text: "Vazgeç", style: "cancel" },
           { text: "Evet, İptal Et", style: "destructive", onPress: performCancel }
         ]
       );
+    }
+  };
+
+  const handleRestoreMatch = async () => {
+    try {
+      const res = await apiFetch(`${API_URL}/matches/${matchInfo.id}/restore`, { method: 'POST' });
+      const data = await res.json();
+      if (res.ok) {
+        setMatchStatus('OPEN');
+        fetchMatchInfo();
+        fetchPlayers();
+      } else Alert.alert('Olmadı', data.error || 'Geri alınamadı.');
+    } catch (e) {
+      Alert.alert('Hata', 'Bağlantı sorunu yaşandı.');
     }
   };
 
@@ -449,8 +463,9 @@ export default function MatchDetailsScreen({ route, navigation }: any) {
   const lockHours = Number(matchInfo.lockoutHours ?? 0);
   const lockAt = ts ? ts - lockHours * 3600 * 1000 : 0;
   const now = Date.now();
-  const phase: 'open' | 'locked' | 'started' | 'completed' =
-    isCompleted ? 'completed' : ts && now >= ts ? 'started' : lockAt && lockHours > 0 && now >= lockAt ? 'locked' : 'open';
+  const isCancelled = matchStatus === 'CANCELLED';
+  const phase: 'open' | 'locked' | 'started' | 'completed' | 'cancelled' =
+    isCancelled ? 'cancelled' : isCompleted ? 'completed' : ts && now >= ts ? 'started' : lockAt && lockHours > 0 && now >= lockAt ? 'locked' : 'open';
   const inRoster = myStatus === 'ACTIVE' || myStatus === 'RESERVE';
 
   const onRefresh = async () => {
@@ -610,7 +625,7 @@ export default function MatchDetailsScreen({ route, navigation }: any) {
               <Text style={styles.playerPosition}>{String(player.position || "Orta Saha")}</Text>
             )}
             {player.goals > 0 && <Text style={{color: '#00E676', fontSize: 12, marginTop: 3, fontWeight: 'bold'}}>⚽ {player.goals} Gol</Text>}
-            {pitchFee && player.status === 'ACTIVE' ? (
+            {pitchFee && !isCancelled && player.status === 'ACTIVE' ? (
               isManager ? (
                 <TouchableOpacity onPress={() => togglePaid(player)} style={[styles.paidChip, player.paid && styles.paidChipOn]} hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}>
                   <Text style={[styles.paidChipText, player.paid && { color: '#0F172A' }]}>{player.paid ? '✓ Ödedi' : 'Ödemedi'}</Text>
@@ -666,7 +681,7 @@ export default function MatchDetailsScreen({ route, navigation }: any) {
         <LinearGradient colors={["#1E293B", "#0F172A"]} style={styles.infoCard}>
           <View style={styles.infoTop}>
             <Text style={styles.matchTitle}>{String(matchInfo.location || "Bilinmeyen Saha")}</Text>
-            {isManager && !isCompleted ? (
+            {isManager && !isCompleted && !isCancelled ? (
               <TouchableOpacity onPress={openEdit} style={styles.editBtn} accessibilityLabel="Maçı düzenle" hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
                 <Ionicons name="create-outline" size={18} color="#00E676" />
                 <Text style={styles.editBtnText}>Düzenle</Text>
@@ -698,8 +713,9 @@ export default function MatchDetailsScreen({ route, navigation }: any) {
           <View style={styles.organizerRow}>
             <View style={styles.organizerAvatar}><Ionicons name="flag-outline" size={16} color="#00E676" /></View>
             <View style={{ flex: 1 }}>
-              <Text style={styles.organizerText}>
-                {phase === 'completed' ? 'Maç tamamlandı'
+              <Text style={[styles.organizerText, phase === 'cancelled' && { color: '#F87171', fontWeight: 'bold' }]}>
+                {phase === 'cancelled' ? 'Maç iptal edildi'
+                  : phase === 'completed' ? 'Maç tamamlandı'
                   : phase === 'started' ? 'Maç saati geldi, sonuç bekleniyor'
                   : phase === 'locked' ? 'Kadro kilitlendi'
                   : 'Kadro açık'}
@@ -708,7 +724,12 @@ export default function MatchDetailsScreen({ route, navigation }: any) {
                 <Text style={styles.lockHint}>Son değişiklik: {formatClock(lockAt)}</Text>
               )}
             </View>
-            {phase !== 'completed' && phase !== 'started' && isManager && (
+            {phase === 'cancelled' && isManager && ts > now && (
+              <TouchableOpacity style={{backgroundColor: 'rgba(0, 230, 118, 0.12)', borderWidth: 1, borderColor: 'rgba(0, 230, 118, 0.45)', paddingHorizontal: 12, paddingVertical: 6, borderRadius: 8}} onPress={handleRestoreMatch}>
+                 <Text style={{color: '#00E676', fontSize: 13, fontWeight: 'bold'}}>İptali geri al</Text>
+              </TouchableOpacity>
+            )}
+            {(phase === 'open' || phase === 'locked' || phase === 'started') && isManager && (
               <TouchableOpacity style={{backgroundColor: 'rgba(239, 68, 68, 0.15)', borderWidth: 1, borderColor: 'rgba(239, 68, 68, 0.5)', paddingHorizontal: 12, paddingVertical: 6, borderRadius: 8}} onPress={handleCancelMatch}>
                  <Text style={{color: '#F87171', fontSize: 13, fontWeight: 'bold'}}>İptal Et</Text>
               </TouchableOpacity>
@@ -740,7 +761,7 @@ export default function MatchDetailsScreen({ route, navigation }: any) {
           </TouchableOpacity>
         ) : null}
 
-        {pitchFee ? (
+        {pitchFee && !isCancelled ? (
           <View style={styles.feeCard}>
             <View style={{ flex: 1 }}>
               <Text style={styles.feeLabel}>💸 SAHA ÜCRETİ</Text>
@@ -754,13 +775,13 @@ export default function MatchDetailsScreen({ route, navigation }: any) {
                 {me?.status === 'ACTIVE' ? (me.paid ? ' Sen ödedin ✅' : ' Sen henüz ödemedin.') : ''}
               </Text>
             </View>
-            {isManager && (
+            {isManager && !isCancelled && (
               <TouchableOpacity onPress={() => { setFeeInput(String(pitchFee)); setFeeModal(true); }} style={{ padding: 6 }}>
                 <Text style={styles.feeEdit}>Düzenle</Text>
               </TouchableOpacity>
             )}
           </View>
-        ) : isManager && !isCompleted ? (
+        ) : isManager && !isCompleted && !isCancelled ? (
           <TouchableOpacity onPress={() => { setFeeInput(''); setFeeModal(true); }} style={styles.feeAdd}>
             <Ionicons name="cash-outline" size={18} color="#94A3B8" />
             <Text style={styles.feeAddText}>Saha ücreti ekle (kişi başı payı hesaplansın)</Text>
@@ -825,7 +846,7 @@ export default function MatchDetailsScreen({ route, navigation }: any) {
           </View>
         </View>}
 
-        {!isCompleted && (
+        {!isCompleted && !isCancelled && (
           <TouchableOpacity style={styles.guestBtn} onPress={() => setGuestModal(true)} activeOpacity={0.8}>
             <Ionicons name="person-add-outline" size={18} color="#00E676" />
             <Text style={styles.guestBtnText}>

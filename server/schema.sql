@@ -209,3 +209,7 @@ alter table sportarea."Groups" add column "weeklyFee" integer check ("weeklyFee"
 -- v6: Misafir oyuncu. Misafir, giriş yapamayan bir kullanıcı kaydıdır (User.role = 'GUEST');
 -- "invitedBy" onu maça getiren grup üyesidir.
 alter table sportarea."MatchPlayers" add column "invitedBy" text references sportarea."User"(id) on delete set null;
+
+-- v7: İptal edilen maç silinmez, status = 'CANCELLED' olur.
+--     Maç saatinden sonra bitirilmemiş maç için yöneticiye bir kez hatırlatma.
+alter table sportarea."Matches" add column "finishReminderSentAt" timestamptz;

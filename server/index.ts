@@ -934,6 +934,7 @@ app.delete('/api/push-token', async (req, res) => {
 // Gizli anahtar veritabanında (sportarea."AppConfig") duruyor; zamanlayıcı da oradan okuyor.
 // Böylece Render'a ayrıca ortam değişkeni eklemek gerekmiyor.
 const REMINDER_WINDOW_MS = 24 * 60 * 60 * 1000;
+const FINISH_REMINDER_AFTER_MS = 2 * 60 * 60 * 1000;
 
 async function runCronTick() {
   // 0) Maçı silinmiş, hiçbir maçta kaydı kalmamış misafirleri temizle.
@@ -982,8 +983,37 @@ async function runCronTick() {
       pushes.push({ userId: p.userId, title: `${g?.name || 'Maç'} · ${when}`, body, data: { matchId: m.id } });
     }
   }
+  const reminders = pushes.length;
+
+  // 3) Maç saatinden 2 saat geçti ama "Maçı Bitir" denmedi: maçı yönetene bir kez hatırlat.
+  //    (Bir haftadan eski maçlar için hatırlatma yapılmaz.)
+  const unfinished = await db.all(
+    `UPDATE "Matches" m SET "finishReminderSentAt" = now()
+     WHERE m.status = 'OPEN' AND m."finishReminderSentAt" IS NULL
+       AND m."matchTimestamp" > 0 AND m."matchTimestamp" <= ? AND m."matchTimestamp" > ?
+     RETURNING m.id, m.location, m."matchTimestamp", m."creatorId",
+       (SELECT g."creatorId" FROM "Groups" g WHERE g.id = m."groupId") AS "groupCreatorId"`,
+    [now - FINISH_REMINDER_AFTER_MS, now - 7 * 24 * 3600 * 1000]
+  );
+  for (const m of unfinished) {
+    const to = m.creatorId || m.groupCreatorId;
+    if (!to) continue;
+    const when = friendlyMatchTime(Number(m.matchTimestamp));
+    await db.run('INSERT INTO "Notifications" (id, "userId", message, type, metadata) VALUES (?, ?, ?, ?, ?)', [
+      randomUUID(), to,
+      `${when} · ${m.location} maçı hâlâ açık görünüyor. Oynandıysa "Maçı Bitir" deyip skoru gir, oynanmadıysa iptal et.`,
+      'INFO', JSON.stringify({ matchId: m.id }),
+    ]);
+    pushes.push({
+      userId: to,
+      title: 'Maç bitti mi? 🏁',
+      body: `${when} · ${m.location}: skoru gir ya da oynanmadıysa iptal et.`,
+      data: { matchId: m.id },
+    });
+  }
+
   const { sent } = await sendPush(pushes);
-  return { opened, remindedMatches: due.length, reminders: pushes.length, pushSent: sent };
+  return { opened, remindedMatches: due.length, reminders, finishReminders: unfinished.length, pushSent: sent };
 }
 
 app.post('/api/cron/tick', async (req, res) => {
@@ -1136,6 +1166,7 @@ app.put('/api/matches/:id', async (req, res) => {
         [matchId]
       );
       if (m.status === 'COMPLETED') return { status: 400, body: { error: 'Tamamlanmış maç düzenlenemez.' } };
+      if (m.status === 'CANCELLED') return { status: 400, body: { error: 'İptal edilmiş maç düzenlenemez; önce iptali geri al.' } };
       const timeChanged = Number(m.matchTimestamp) !== ts;
       if (timeChanged && ts < Date.now()) return { status: 400, body: { error: 'Seçtiğin gün ve saat geçmişte kalıyor.' } };
 
@@ -1187,19 +1218,71 @@ app.put('/api/matches/:id', async (req, res) => {
   }
 });
 
+// İPTAL: maç silinmez; durumu CANCELLED olur, kadrosuyla birlikte kayıtlı kalır ve "İptal" olarak görünür.
+// Gruptaki herkese haber gider. Maç saati geçmediyse yöneten kişi iptali geri alabilir.
+async function setCancelled(matchId: string, byUserId: string, cancel: boolean) {
+  const pushes: PushMessage[] = [];
+  const result = await tx(async (t) => {
+    const m = await t.get(
+      `SELECT m.*, g.name AS "groupName" FROM "Matches" m LEFT JOIN "Groups" g ON g.id = m."groupId" WHERE m.id = ? FOR UPDATE OF m`,
+      [matchId]
+    );
+    if (cancel) {
+      if (m.status === 'COMPLETED') return { status: 400, body: { error: 'Tamamlanmış maç iptal edilemez.' } };
+      if (m.status === 'CANCELLED') return { status: 200, body: { message: 'Maç zaten iptal edilmiş.' } };
+    } else {
+      if (m.status !== 'CANCELLED') return { status: 400, body: { error: 'Bu maç iptal edilmemiş.' } };
+      if (!(Number(m.matchTimestamp) > Date.now())) return { status: 400, body: { error: 'Maç saati geçtiği için iptal geri alınamaz.' } };
+    }
+    await t.run('UPDATE "Matches" SET status = ? WHERE id = ?', [cancel ? 'CANCELLED' : 'OPEN', matchId]);
+
+    if (m.groupId) {
+      const when = friendlyMatchTime(Number(m.matchTimestamp));
+      const text = cancel
+        ? `${m.groupName || 'Grubun'}: ${when} · ${m.location} maçı iptal edildi.`
+        : `${m.groupName || 'Grubun'}: ${when} · ${m.location} maçı tekrar açıldı.`;
+      const members = await t.all('SELECT "userId" FROM "GroupMembers" WHERE "groupId" = ? AND "userId" <> ?', [m.groupId, byUserId]);
+      for (const mem of members) {
+        await t.run('INSERT INTO "Notifications" (id, "userId", message, type, metadata) VALUES (?, ?, ?, ?, ?)', [
+          randomUUID(), mem.userId, text, 'INFO', JSON.stringify({ matchId }),
+        ]);
+        pushes.push({
+          userId: mem.userId,
+          title: cancel ? `Maç iptal ❌ · ${m.groupName || 'SporArea'}` : `Maç tekrar açıldı · ${m.groupName || 'SporArea'}`,
+          body: `${when} · ${m.location}`,
+          data: { matchId },
+        });
+      }
+    }
+    return { status: 200, body: { message: cancel ? 'Maç iptal edildi.' : 'İptal geri alındı, maç tekrar açık.' } };
+  });
+  sendPushInBackground(pushes);
+  return result;
+}
+
 app.delete('/api/matches/:id', async (req, res) => {
   try {
-    const { id } = req.params;
-    const perm = await canManageMatch(id, req.user.id);
+    const perm = await canManageMatch(req.params.id, req.user.id);
     if (!perm.exists) return res.status(404).json({ error: 'Maç bulunamadı.' });
-    if (!perm.allowed) return res.status(403).json({ error: 'Bu maçı silme yetkiniz yok.' });
-
-    // Oyuncular, MVP oyları, mesajlar ve puanlar otomatik silinir (veritabanı kuralı).
-    await db.run('DELETE FROM "Matches" WHERE id = ?', [id]);
-
-    res.json({ message: 'Maç başarıyla iptal edildi.' });
+    if (!perm.allowed) return res.status(403).json({ error: 'Bu maçı iptal etme yetkiniz yok.' });
+    const r = await setCancelled(req.params.id, req.user.id, true);
+    res.status(r.status).json(r.body);
   } catch (error) {
+    console.error('Cancel match error:', error);
     res.status(500).json({ error: 'Maç iptal edilirken hata oluştu.' });
+  }
+});
+
+app.post('/api/matches/:id/restore', async (req, res) => {
+  try {
+    const perm = await canManageMatch(req.params.id, req.user.id);
+    if (!perm.exists) return res.status(404).json({ error: 'Maç bulunamadı.' });
+    if (!perm.allowed) return res.status(403).json({ error: 'Bu maçı sadece yöneten kişi geri açabilir.' });
+    const r = await setCancelled(req.params.id, req.user.id, false);
+    res.status(r.status).json(r.body);
+  } catch (error) {
+    console.error('Restore match error:', error);
+    res.status(500).json({ error: 'İptal geri alınamadı.' });
   }
 });
 
@@ -1294,6 +1377,7 @@ async function respondToMatch(matchId: string, userId: string, response: MatchAn
     );
     if (!matchRow) return { status: 404, body: { error: 'Maç bulunamadı' } };
     if (matchRow.status === 'COMPLETED') return { status: 400, body: { error: 'Bu maç tamamlandı.' } };
+    if (matchRow.status === 'CANCELLED') return { status: 400, body: { error: 'Bu maç iptal edildi.' } };
 
     if (matchRow.groupId) {
       const member = await t.get('SELECT 1 FROM "GroupMembers" WHERE "groupId" = ? AND "userId" = ?', [matchRow.groupId, userId]);
@@ -1427,6 +1511,7 @@ app.post('/api/matches/:id/guests', async (req, res) => {
       );
       if (!m) return { status: 404, body: { error: 'Maç bulunamadı.' } };
       if (m.status === 'COMPLETED') return { status: 400, body: { error: 'Bu maç tamamlandı.' } };
+      if (m.status === 'CANCELLED') return { status: 400, body: { error: 'Bu maç iptal edildi.' } };
       if (m.groupId) {
         const member = await t.get('SELECT 1 FROM "GroupMembers" WHERE "groupId" = ? AND "userId" = ?', [m.groupId, hostId]);
         if (!member) return { status: 403, body: { error: 'Misafiri sadece grup üyeleri ekleyebilir.' } };
@@ -1652,6 +1737,8 @@ app.post('/api/matches/:id/finish', async (req, res) => {
     const perm = await canManageMatch(id, req.user.id);
     if (!perm.exists) return res.status(404).json({ error: 'Maç bulunamadı.' });
     if (!perm.allowed) return res.status(403).json({ error: 'Maçı sadece kuran kişi bitirebilir.' });
+    const cur = await db.get('SELECT status FROM "Matches" WHERE id = ?', [id]);
+    if (cur?.status === 'CANCELLED') return res.status(400).json({ error: 'İptal edilmiş maç bitirilemez.' });
 
     await tx(async (t) => {
       await t.run(`UPDATE "Matches" SET status = 'COMPLETED', score = ? WHERE id = ?`, [score || null, id]);
