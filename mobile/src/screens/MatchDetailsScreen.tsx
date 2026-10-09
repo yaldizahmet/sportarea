@@ -144,7 +144,10 @@ export default function MatchDetailsScreen({ route, navigation }: any) {
   const [saveTeamsLoading, setSaveTeamsLoading] = useState(false);
   const [groupCreatorId, setGroupCreatorId] = useState(matchInfo.groupCreatorId || null);
   // Takım kurma, maçı bitirme ve iptal: maçı kuran ya da grubun kurucusu (sunucudaki kuralın aynısı)
-  const isManager = matchInfo.creatorId === user.id || groupCreatorId === user.id;
+  // Yetki sunucudan gelir (maçı kuran, grup kurucusu ya da grup yöneticisi); gelmeden önce eski kural.
+  const isManager = matchInfo.canManage !== undefined
+    ? Boolean(matchInfo.canManage)
+    : matchInfo.creatorId === user.id || groupCreatorId === user.id;
 
   // Hava durumu: saha adı haritada bulunursa ve maç 7 gün içindeyse gösterilir.
   // Bulunamazsa hiçbir şey gösterilmez (yanlış şehrin havasını göstermektense).

@@ -11,6 +11,7 @@ import {
   TextInput,
   Platform,
   Switch,
+  Modal,
   Image,
   ActivityIndicator,
 } from 'react-native';
@@ -55,6 +56,10 @@ export default function GroupDetailsScreen({ route, navigation }: any) {
   const [savingSchedule, setSavingSchedule] = useState(false);
 
   const isCreator = group.creatorId === user.id;
+  // Rol sunucudan gelir (kurucu / yönetici / üye); gelmeden önce kurucu kontrolüyle başlar.
+  const myRole: 'founder' | 'admin' | 'member' = group.myRole || (isCreator ? 'founder' : 'member');
+  const canAdmin = myRole === 'founder' || myRole === 'admin';
+  const [transferModal, setTransferModal] = useState(false);
   const weekly = formatWeekly(group.weeklyDay, group.weeklyTime);
 
   const fetchGroup = async () => {
@@ -274,6 +279,57 @@ export default function GroupDetailsScreen({ route, navigation }: any) {
       }
     });
 
+  const handleToggleAdmin = (member: any) => {
+    const make = !member.isAdmin;
+    confirmThen(
+      make ? 'Yönetici yap' : 'Yöneticiliği al',
+      make
+        ? `${displayName(member)} yönetici olsun mu? Maçları düzenleyebilir, iptal edebilir, takımları bölüp skoru girebilir, haftalık maçı ayarlayabilir ve üye çıkarabilir.`
+        : `${displayName(member)} artık yönetici olmasın mı?`,
+      make ? 'Yönetici yap' : 'Yöneticiliği al',
+      async () => {
+        try {
+          const res = await apiFetch(`${API_URL}/groups/${group.id}/members/${member.id}/admin`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ isAdmin: make }),
+          });
+          const data = await res.json();
+          if (res.ok) fetchMembers();
+          else showAlert('Olmadı', data.error || 'Kaydedilemedi.');
+        } catch (e) {
+          showAlert('Hata', 'Bağlantı sorunu yaşandı.');
+        }
+      }
+    );
+  };
+
+  const handleTransfer = (member: any) => {
+    setTransferModal(false);
+    confirmThen(
+      'Kuruculuğu devret',
+      `Grubun kurucusu ${displayName(member)} olsun mu? Sen yönetici olarak devam edersin; grubu silme ve yönetici atama yetkisi ona geçer.`,
+      'Devret',
+      async () => {
+        try {
+          const res = await apiFetch(`${API_URL}/groups/${group.id}/transfer`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ userId: member.id }),
+          });
+          const data = await res.json();
+          if (res.ok) {
+            showAlert('Devredildi', data.message);
+            fetchGroup();
+            fetchMembers();
+          } else showAlert('Olmadı', data.error || 'Devredilemedi.');
+        } catch (e) {
+          showAlert('Hata', 'Bağlantı sorunu yaşandı.');
+        }
+      }
+    );
+  };
+
   const handleRemoveMember = (member: any) =>
     confirmThen('Üyeyi çıkar', `${displayName(member)} gruptan çıkarılsın mı? Yaklaşan maçlardaki yeri yedeğe geçer.`, 'Çıkar', async () => {
       try {
@@ -337,7 +393,7 @@ export default function GroupDetailsScreen({ route, navigation }: any) {
           <View style={styles.cardHeaderRow}>
             <Ionicons name="repeat" size={20} color="#00E676" />
             <Text style={styles.cardTitle}>Haftalık maç</Text>
-            {isCreator && !editingSchedule && (
+            {canAdmin && !editingSchedule && (
               <TouchableOpacity onPress={startEditSchedule} style={styles.linkButton}>
                 <Text style={styles.linkButtonText}>{weekly ? 'Düzenle' : 'Ayarla'}</Text>
               </TouchableOpacity>
@@ -362,9 +418,9 @@ export default function GroupDetailsScreen({ route, navigation }: any) {
               </View>
             ) : (
               <Text style={styles.weeklyHint}>
-                {isCreator
+                {canAdmin
                   ? 'Gün, saat ve sahayı bir kez gir; maç her hafta kendiliğinden açılsın.'
-                  : 'Henüz ayarlanmadı. Grubu kuran kişi ayarlayabilir.'}
+                  : 'Henüz ayarlanmadı. Grubun kurucusu ya da yöneticiler ayarlayabilir.'}
               </Text>
             )
           ) : (
@@ -475,16 +531,20 @@ export default function GroupDetailsScreen({ route, navigation }: any) {
           ) : (
             members.map((member) => {
               const founder = member.id === group.creatorId;
+              const admin = !founder && Boolean(member.isAdmin);
+              const me = member.id === user.id;
+              // Kurucu: herkesi yönetir. Yönetici: sadece normal üyeleri çıkarabilir.
+              const canRemove = !me && !founder && (myRole === 'founder' || (myRole === 'admin' && !admin));
               return (
                 <View key={member.id} style={styles.memberCard}>
                   <View style={styles.memberLeft}>
-                    <View style={[styles.memberAvatar, founder ? styles.founderAvatar : null]}>
+                    <View style={[styles.memberAvatar, founder ? styles.founderAvatar : admin ? styles.adminAvatar : null]}>
                       <Avatar user={member} size={44} initialStyle={styles.memberInitial} />
                     </View>
                     <View>
                       <Text style={styles.memberName}>{displayName(member)}{member.id === user.id ? ' (sen)' : ''}</Text>
                       <Text style={styles.memberRole}>
-                        {realNameHint(member) ? `${realNameHint(member)} · ` : ''}{founder ? 'Kurucu' : String(member.position || 'Oyuncu')}
+                        {realNameHint(member) ? `${realNameHint(member)} · ` : ''}{founder ? 'Kurucu' : admin ? 'Yönetici' : String(member.position || 'Oyuncu')}
                         {member.alwaysIn ? ' · Her hafta' : ''}
                       </Text>
                     </View>
@@ -494,15 +554,20 @@ export default function GroupDetailsScreen({ route, navigation }: any) {
                       <Ionicons name="football" size={14} color="#A0A0A0" />
                       <Text style={styles.memberMatches}>{String(member.matches || 0)}</Text>
                     </View>
+                    {myRole === 'founder' && !founder && (
+                      <TouchableOpacity onPress={() => handleToggleAdmin(member)} hitSlop={{ top: 10, bottom: 10, left: 6, right: 6 }} accessibilityLabel={`${member.name} yöneticilik`}>
+                        <Ionicons name={admin ? 'shield-checkmark' : 'shield-outline'} size={19} color={admin ? '#38BDF8' : '#64748B'} />
+                      </TouchableOpacity>
+                    )}
                     {isCreator && !founder && (
-                      <>
-                        <TouchableOpacity onPress={() => handleResetPassword(member)} hitSlop={{ top: 10, bottom: 10, left: 6, right: 6 }} accessibilityLabel={`${member.name} için geçici şifre`}>
-                          <Ionicons name="key-outline" size={19} color="#FACC15" />
-                        </TouchableOpacity>
-                        <TouchableOpacity onPress={() => handleRemoveMember(member)} hitSlop={{ top: 10, bottom: 10, left: 6, right: 10 }} accessibilityLabel={`${member.name} gruptan çıkar`}>
-                          <Ionicons name="person-remove-outline" size={20} color="#F87171" />
-                        </TouchableOpacity>
-                      </>
+                      <TouchableOpacity onPress={() => handleResetPassword(member)} hitSlop={{ top: 10, bottom: 10, left: 6, right: 6 }} accessibilityLabel={`${member.name} için geçici şifre`}>
+                        <Ionicons name="key-outline" size={19} color="#FACC15" />
+                      </TouchableOpacity>
+                    )}
+                    {canRemove && (
+                      <TouchableOpacity onPress={() => handleRemoveMember(member)} hitSlop={{ top: 10, bottom: 10, left: 6, right: 10 }} accessibilityLabel={`${member.name} gruptan çıkar`}>
+                        <Ionicons name="person-remove-outline" size={20} color="#F87171" />
+                      </TouchableOpacity>
                     )}
                   </View>
                 </View>
@@ -518,6 +583,19 @@ export default function GroupDetailsScreen({ route, navigation }: any) {
           </TouchableOpacity>
         )}
 
+        {myRole === 'founder' && members.length > 1 && (
+          <Text style={styles.adminHint}>
+            🛡️ simgesiyle bir üyeyi yönetici yapabilirsin: maçları düzenler, iptal eder, takımları böler, skoru girer, haftalık maçı ayarlar.
+          </Text>
+        )}
+
+        {isCreator && members.length > 1 && (
+          <TouchableOpacity style={styles.transferButton} onPress={() => setTransferModal(true)}>
+            <Ionicons name="swap-horizontal" size={18} color="#38BDF8" style={{ marginRight: 8 }} />
+            <Text style={styles.transferButtonText}>Kuruculuğu devret</Text>
+          </TouchableOpacity>
+        )}
+
         {isCreator && (
           <TouchableOpacity style={styles.deleteButton} onPress={handleDeleteGroup}>
             <Ionicons name="trash-outline" size={18} color="#F87171" style={{ marginRight: 8 }} />
@@ -527,6 +605,28 @@ export default function GroupDetailsScreen({ route, navigation }: any) {
 
         <View style={{ height: 40 }} />
       </ScrollView>
+
+      <Modal visible={transferModal} transparent animationType="slide" onRequestClose={() => setTransferModal(false)}>
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContent}>
+            <Text style={styles.modalTitle}>Kuruculuğu kime devredeceksin?</Text>
+            <ScrollView style={{ maxHeight: 360 }}>
+              {members.filter((m) => m.id !== user.id).map((m) => (
+                <TouchableOpacity key={m.id} style={styles.transferRow} onPress={() => handleTransfer(m)}>
+                  <View style={[styles.memberAvatar, { width: 36, height: 36, borderRadius: 18 }]}>
+                    <Avatar user={m} size={36} initialStyle={styles.memberInitial} />
+                  </View>
+                  <Text style={{ color: '#FFFFFF', fontSize: 16, flex: 1 }}>{displayName(m)}</Text>
+                  {m.isAdmin ? <Text style={{ color: '#38BDF8', fontSize: 12 }}>Yönetici</Text> : null}
+                </TouchableOpacity>
+              ))}
+            </ScrollView>
+            <TouchableOpacity style={{ paddingVertical: 15, alignItems: 'center' }} onPress={() => setTransferModal(false)}>
+              <Text style={{ color: '#CBD5E1', fontSize: 16, fontWeight: 'bold' }}>Vazgeç</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -578,6 +678,14 @@ const styles = StyleSheet.create({
   memberLeft: { flexDirection: 'row', alignItems: 'center', flex: 1 },
   memberAvatar: { width: 44, height: 44, borderRadius: 22, backgroundColor: '#334155', justifyContent: 'center', alignItems: 'center', marginRight: 14, overflow: 'hidden' },
   founderAvatar: { borderWidth: 1.5, borderColor: '#00E676' },
+  adminAvatar: { borderWidth: 1.5, borderColor: '#38BDF8' },
+  adminHint: { color: '#64748B', fontSize: 12, marginTop: 12, lineHeight: 17 },
+  transferButton: { flexDirection: 'row', justifyContent: 'center', alignItems: 'center', marginTop: 20, paddingVertical: 14, borderRadius: 14, borderWidth: 1, borderColor: 'rgba(56, 189, 248, 0.4)' },
+  transferButtonText: { color: '#38BDF8', fontSize: 15, fontWeight: 'bold' },
+  transferRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: 'rgba(255,255,255,0.06)' },
+  modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.8)', justifyContent: 'flex-end' },
+  modalContent: { backgroundColor: '#1E293B', borderTopLeftRadius: 30, borderTopRightRadius: 30, padding: 25, paddingBottom: 30 },
+  modalTitle: { fontSize: 18, fontWeight: 'bold', color: '#FFFFFF', marginBottom: 14, textAlign: 'center' },
   memberInitial: { color: '#FFFFFF', fontWeight: 'bold', fontSize: 18 },
   memberName: { color: '#FFFFFF', fontSize: 16, fontWeight: '600' },
   memberRole: { color: '#94A3B8', fontSize: 13, marginTop: 2 },

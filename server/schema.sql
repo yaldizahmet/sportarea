@@ -216,3 +216,6 @@ alter table sportarea."Matches" add column "finishReminderSentAt" timestamptz;
 
 -- v8: Lakap. Uygulamada görünen ad: lakap varsa lakap, yoksa "Ahmet Y."
 alter table sportarea."User" add column nickname text check (char_length(nickname) <= 20);
+
+-- v9: Grup yöneticileri. Kurucu üyeleri yönetici yapabilir; yöneticiler maçları ve haftalık ayarı yönetir.
+alter table sportarea."GroupMembers" add column "isAdmin" boolean not null default false;

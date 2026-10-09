@@ -525,9 +525,9 @@ export default function DashboardScreen({ route, navigation }: any) {
                     </Text>
                   </View>
                   <View style={styles.rowRightSection}>
-                    {group.creatorId === user.id && (
+                    {(group.creatorId === user.id || group.myIsAdmin) && (
                       <View style={[styles.miniBadge, { backgroundColor: 'rgba(33, 150, 243, 0.15)', borderColor: 'rgba(33, 150, 243, 0.3)' }]}>
-                        <Text style={[styles.miniBadgeText, { color: '#2196F3' }]}>Kurucu</Text>
+                        <Text style={[styles.miniBadgeText, { color: '#2196F3' }]}>{group.creatorId === user.id ? 'Kurucu' : 'Yönetici'}</Text>
                       </View>
                     )}
                     <Ionicons name="chevron-forward" size={16} color="#64748B" style={{ marginLeft: 8 }} />

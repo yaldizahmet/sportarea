@@ -71,17 +71,18 @@ const isLockedOut = (match: any) => {
   return Date.now() > Number(match.matchTimestamp) - lockoutMs;
 };
 
-// Maçı yönetme yetkisi (takım kurma, bitirme, iptal): maçı kuran kişi ya da grubun kurucusu.
+// Maçı yönetme yetkisi (takım kurma, bitirme, iptal): maçı kuran kişi, grubun kurucusu ya da grup yöneticileri.
 // Haftalık otomatik maçlarda maçı "kuran" grup kurucusudur.
 const canManageMatch = async (matchId: string, userId: string) => {
   const row = await db.get(
-    `SELECT m."creatorId", g."creatorId" AS "groupCreatorId"
+    `SELECT m."creatorId", g."creatorId" AS "groupCreatorId",
+       EXISTS (SELECT 1 FROM "GroupMembers" gm WHERE gm."groupId" = m."groupId" AND gm."userId" = ? AND gm."isAdmin") AS "isAdmin"
      FROM "Matches" m LEFT JOIN "Groups" g ON g.id = m."groupId"
      WHERE m.id = ?`,
-    [matchId]
+    [userId, matchId]
   );
   if (!row) return { exists: false, allowed: false };
-  return { exists: true, allowed: row.creatorId === userId || row.groupCreatorId === userId };
+  return { exists: true, allowed: row.creatorId === userId || row.groupCreatorId === userId || Boolean(row.isAdmin) };
 };
 
 // ---- Haftalık maç zamanlaması ----
@@ -386,7 +387,7 @@ app.get('/api/me', async (req, res) => {
 app.get('/api/groups', async (req, res) => {
   try {
     const groups = await db.all(`
-      SELECT g.* FROM "Groups" g
+      SELECT g.*, gm."isAdmin" AS "myIsAdmin" FROM "Groups" g
       JOIN "GroupMembers" gm ON g.id = gm."groupId"
       WHERE gm."userId" = ?
       ORDER BY g."createdAt" DESC
@@ -464,6 +465,21 @@ app.get('/api/invite/:code', inviteLimiter, async (req, res) => {
 const isGroupMember = async (groupId: string, userId: string) =>
   Boolean(await db.get('SELECT 1 FROM "GroupMembers" WHERE "groupId" = ? AND "userId" = ?', [groupId, userId]));
 
+// Gruptaki rol: kurucu (tek kişi, grubu silebilir, yönetici atar), yönetici (maçları ve haftalık ayarı yönetir), üye.
+type GroupRole = 'founder' | 'admin' | 'member' | null;
+async function groupRole(groupId: string, userId: string): Promise<GroupRole> {
+  const r = await db.get(
+    `SELECT g."creatorId", gm."isAdmin" FROM "Groups" g
+     LEFT JOIN "GroupMembers" gm ON gm."groupId" = g.id AND gm."userId" = ?
+     WHERE g.id = ?`,
+    [userId, groupId]
+  );
+  if (!r) return null;
+  if (r.creatorId === userId) return 'founder';
+  if (r.isAdmin === null || r.isAdmin === undefined) return null; // üye değil
+  return r.isAdmin ? 'admin' : 'member';
+}
+
 // Grup sayfası: grup bilgisi, haftalık maç ayarı, benim "her hafta varım" durumum ve sayılar.
 app.get('/api/groups/:id', async (req, res) => {
   try {
@@ -478,7 +494,7 @@ app.get('/api/groups/:id', async (req, res) => {
         (SELECT "alwaysIn" FROM "GroupMembers" WHERE "groupId" = g.id AND "userId" = ?) AS "myAlwaysIn"
       FROM "Groups" g WHERE g.id = ?
     `, [req.user.id, id]);
-    res.json(group);
+    res.json({ ...group, myRole: await groupRole(id, req.user.id) });
   } catch (e) {
     res.status(500).json({ error: 'Grup bilgisi alınamadı.' });
   }
@@ -489,7 +505,7 @@ app.get('/api/groups/:id/members', async (req, res) => {
     const { id } = req.params;
     if (!(await isGroupMember(id, req.user.id))) return res.status(403).json({ error: 'Bu grubun üyesi değilsiniz.' });
     const members = await db.all(`
-      SELECT u.id, u.name, u.nickname, u.avatar, u.position, gm."alwaysIn",
+      SELECT u.id, u.name, u.nickname, u.avatar, u.position, gm."alwaysIn", gm."isAdmin",
         (SELECT COUNT(*) FROM "MatchPlayers" mp JOIN "Matches" m ON m.id = mp."matchId"
           WHERE mp."userId" = u.id AND m."groupId" = gm."groupId" AND m.status = 'COMPLETED') AS matches
       FROM "User" u
@@ -509,7 +525,8 @@ app.put('/api/groups/:id/schedule', async (req, res) => {
     const { id } = req.params;
     const group = await db.get('SELECT "creatorId" FROM "Groups" WHERE id = ?', [id]);
     if (!group) return res.status(404).json({ error: 'Grup bulunamadı.' });
-    if (group.creatorId !== req.user.id) return res.status(403).json({ error: 'Haftalık maçı sadece grup kurucusu ayarlayabilir.' });
+    const role = await groupRole(id, req.user.id);
+    if (role !== 'founder' && role !== 'admin') return res.status(403).json({ error: 'Haftalık maçı sadece grup kurucusu ya da yöneticiler ayarlayabilir.' });
 
     if (req.body.enabled === false) {
       await db.run(
@@ -612,7 +629,7 @@ async function removeFromGroup(groupId: string, userId: string) {
 }
 
 // HESAP SİLME (Google Play şartı: uygulama içinden ve web sayfasından)
-// Kurduğu gruplarda yöneticilik en eski üyeye geçer; grupta başka kimse yoksa grup silinir.
+// Kurduğu gruplarda kuruculuk önce bir yöneticiye, yoksa en eski üyeye geçer; grupta başka kimse yoksa grup silinir.
 // Yaklaşan maçlardaki yeri boşalır (ilk yedek kadroya geçer). Sonra tüm kişisel verisi silinir
 // (oylar, puanlar, bildirimler, cihaz kayıtları veritabanı kuralıyla birlikte gider).
 async function deleteAccount(userId: string) {
@@ -624,7 +641,7 @@ async function deleteAccount(userId: string) {
   for (const g of groups) {
     if (g.creatorId === userId) {
       const heir = await db.get(
-        `SELECT "userId" FROM "GroupMembers" WHERE "groupId" = ? AND "userId" <> ? ORDER BY "joinedAt" ASC LIMIT 1`,
+        `SELECT "userId" FROM "GroupMembers" WHERE "groupId" = ? AND "userId" <> ? ORDER BY "isAdmin" DESC, "joinedAt" ASC LIMIT 1`,
         [g.id, userId]
       );
       if (!heir) {
@@ -716,15 +733,67 @@ app.post('/api/groups/:id/members/:userId/reset-password', async (req, res) => {
   }
 });
 
-// Kurucu bir üyeyi gruptan çıkarır.
+// Kurucu bir üyeyi yönetici yapar ya da yöneticiliğini alır.
+app.post('/api/groups/:id/members/:userId/admin', async (req, res) => {
+  try {
+    const { id, userId } = req.params;
+    const makeAdmin = Boolean(req.body?.isAdmin);
+    if ((await groupRole(id, req.user.id)) !== 'founder') return res.status(403).json({ error: 'Yönetici atamayı sadece grubun kurucusu yapabilir.' });
+    const target = await groupRole(id, userId);
+    if (target === null) return res.status(404).json({ error: 'Bu kişi grupta değil.' });
+    if (target === 'founder') return res.status(400).json({ error: 'Kurucu zaten tüm yetkilere sahip.' });
+    await db.run('UPDATE "GroupMembers" SET "isAdmin" = ? WHERE "groupId" = ? AND "userId" = ?', [makeAdmin, id, userId]);
+    if (makeAdmin !== (target === 'admin')) {
+      const g = await db.get('SELECT name FROM "Groups" WHERE id = ?', [id]);
+      const text = makeAdmin
+        ? `${g?.name}: artık grubun yöneticisisin. Maçları düzenleyebilir, iptal edebilir, takımları bölüp skoru girebilirsin.`
+        : `${g?.name}: yöneticilik yetkin kaldırıldı.`;
+      await db.run('INSERT INTO "Notifications" (id, "userId", message, type) VALUES (?, ?, ?, ?)', [randomUUID(), userId, text, 'INFO']);
+      if (makeAdmin) sendPushInBackground([{ userId, title: g?.name || 'SporArea', body: 'Artık grubun yöneticisisin 🛡️', data: {} }]);
+    }
+    res.json({ message: makeAdmin ? 'Yönetici yapıldı.' : 'Yöneticilik kaldırıldı.', isAdmin: makeAdmin });
+  } catch (e) {
+    console.error('Set admin error:', e);
+    res.status(500).json({ error: 'Kaydedilemedi.' });
+  }
+});
+
+// Kurucu, kuruculuğu başka bir üyeye devreder; kendisi yönetici olarak kalır.
+app.post('/api/groups/:id/transfer', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const userId = String(req.body?.userId ?? '');
+    if ((await groupRole(id, req.user.id)) !== 'founder') return res.status(403).json({ error: 'Kuruculuğu sadece kurucu devredebilir.' });
+    if (userId === req.user.id) return res.status(400).json({ error: 'Zaten kurucu sensin.' });
+    if ((await groupRole(id, userId)) === null) return res.status(404).json({ error: 'Bu kişi grupta değil.' });
+    await tx(async (t) => {
+      await t.run('UPDATE "Groups" SET "creatorId" = ? WHERE id = ?', [userId, id]);
+      await t.run('UPDATE "GroupMembers" SET "isAdmin" = false WHERE "groupId" = ? AND "userId" = ?', [id, userId]);
+      await t.run('UPDATE "GroupMembers" SET "isAdmin" = true WHERE "groupId" = ? AND "userId" = ?', [id, req.user.id]);
+      const g = await t.get('SELECT name FROM "Groups" WHERE id = ?', [id]);
+      await t.run('INSERT INTO "Notifications" (id, "userId", message, type) VALUES (?, ?, ?, ?)', [
+        randomUUID(), userId, `${g?.name}: grubun kurucusu artık sensin. Yönetici atayabilir, grubu yönetebilirsin.`, 'INFO',
+      ]);
+    });
+    sendPushInBackground([{ userId, title: 'Grubun kurucusu artık sensin 👑', body: 'Grup yönetimi sana devredildi.', data: {} }]);
+    res.json({ message: 'Kuruculuk devredildi. Sen yönetici olarak devam ediyorsun.' });
+  } catch (e) {
+    console.error('Transfer error:', e);
+    res.status(500).json({ error: 'Devredilemedi.' });
+  }
+});
+
+// Kurucu ya da yönetici bir üyeyi gruptan çıkarır.
 app.delete('/api/groups/:id/members/:userId', async (req, res) => {
   try {
     const { id, userId } = req.params;
-    const group = await db.get('SELECT "creatorId" FROM "Groups" WHERE id = ?', [id]);
-    if (!group) return res.status(404).json({ error: 'Grup bulunamadı.' });
-    if (group.creatorId !== req.user.id) return res.status(403).json({ error: 'Üyeleri sadece grubu kuran kişi çıkarabilir.' });
+    const myRole = await groupRole(id, req.user.id);
+    if (myRole === null) return res.status(404).json({ error: 'Grup bulunamadı.' });
+    if (myRole !== 'founder' && myRole !== 'admin') return res.status(403).json({ error: 'Üyeleri sadece grubun kurucusu ya da yöneticiler çıkarabilir.' });
     if (userId === req.user.id) return res.status(400).json({ error: 'Kendini çıkaramazsın.' });
-    if (!(await isGroupMember(id, userId))) return res.status(404).json({ error: 'Bu kişi grupta değil.' });
+    const targetRole = await groupRole(id, userId);
+    if (targetRole === null) return res.status(404).json({ error: 'Bu kişi grupta değil.' });
+    if (myRole === 'admin' && targetRole !== 'member') return res.status(403).json({ error: 'Yöneticiler kurucuyu ya da başka bir yöneticiyi çıkaramaz.' });
     await removeFromGroup(id, userId);
     res.json({ message: 'Üye gruptan çıkarıldı.' });
   } catch (e) {
@@ -1161,7 +1230,8 @@ app.get('/api/matches/:id', async (req, res) => {
       [req.params.id]
     );
     if (!match) return res.status(404).json({ error: 'Maç bulunamadı.' });
-    res.json(match);
+    const perm = await canManageMatch(match.id, req.user.id);
+    res.json({ ...match, canManage: perm.allowed });
   } catch (error) {
     res.status(500).json({ error: 'Maç bilgisi alınamadı.' });
   }
