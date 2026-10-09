@@ -12,6 +12,7 @@ import {
   Image,
   Platform,
   Linking,
+  Share,
   RefreshControl,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
@@ -19,6 +20,7 @@ import { LinearGradient } from "expo-linear-gradient";
 import { Ionicons } from "@expo/vector-icons";
 import { StatusBar } from "expo-status-bar";
 import { API_URL } from "../config/api";
+import { matchLink } from "../utils/invite";
 import { formatMatchDate, formatClock, formatMoney, shareOf, DAY_NAMES_SHORT } from "../utils/format";
 
 const EDIT_HOURS = ['18:00', '19:00', '20:00', '21:00', '22:00', '23:00', '00:00'];
@@ -391,6 +393,61 @@ export default function MatchDetailsScreen({ route, navigation }: any) {
     }
   };
 
+  // Kadroyu metin olarak paylaş (WhatsApp grubuna atmak için): kim var, kaç yer kaldı, kim cevap vermedi.
+  const buildRosterText = () => {
+    const nameOf = (p: any) => p.isGuest
+      ? `${p.name} (misafir${p.invitedByName ? ` · ${p.invitedByName}` : ''})`
+      : String(p.name);
+    const max = Number(matchInfo.maxPlayers) || activePlayers.length;
+    const lines: string[] = [];
+    lines.push(`⚽ ${matchInfo.groupName ? `${matchInfo.groupName} · ` : ''}${formatMatchDate({ ...matchInfo, matchTimestamp })}`);
+    lines.push(`📍 ${matchInfo.location || 'Saha belirtilmemiş'}`);
+    if (isCancelled) {
+      lines.push('', '❌ BU MAÇ İPTAL EDİLDİ');
+    } else if (isCompleted) {
+      const sc = matchScore || matchInfo.score;
+      if (sc) lines.push(`🏁 Sonuç: ${matchInfo.teamAName || 'A Takımı'} ${sc} ${matchInfo.teamBName || 'B Takımı'}`);
+    }
+    lines.push('');
+    const free = Math.max(0, max - activePlayers.length);
+    lines.push(isCompleted ? `👥 Oynayanlar (${activePlayers.length})` : `👥 Kadro ${activePlayers.length}/${max}${!isCancelled ? (free > 0 ? ` · ${free} yer var` : ' · kadro dolu') : ''}`);
+    if (teamsDivided && !isCancelled) {
+      lines.push(`🔵 ${matchInfo.teamAName || 'A Takımı'}: ${teamA.map(nameOf).join(', ')}`);
+      lines.push(`🔴 ${matchInfo.teamBName || 'B Takımı'}: ${teamB.map(nameOf).join(', ')}`);
+      if (unassigned.length) lines.push(`⚪ Takımsız: ${unassigned.map(nameOf).join(', ')}`);
+    } else {
+      activePlayers.forEach((p: any, i: number) => lines.push(`${i + 1}. ${nameOf(p)}${isCompleted && p.goals > 0 ? ` ⚽${p.goals > 1 ? `x${p.goals}` : ''}` : ''}`));
+    }
+    if (!isCompleted && !isCancelled) {
+      if (reserves.length) lines.push('', `🪑 Yedek: ${reserves.map(nameOf).join(', ')}`);
+      if (maybePlayers.length) lines.push(`🤔 Belki: ${maybePlayers.map(nameOf).join(', ')}`);
+      if (declinedPlayers.length) lines.push(`🚫 Yok: ${declinedPlayers.map(nameOf).join(', ')}`);
+      if (pendingPlayers.length) lines.push(`⏳ Cevap vermeyen: ${pendingPlayers.map(nameOf).join(', ')}`);
+      if (pitchFee && share) lines.push('', `💸 Saha ${formatMoney(pitchFee)} · kişi başı ~${formatMoney(share)}`);
+    }
+    lines.push('', isCompleted || isCancelled ? `Detaylar: ${matchLink(matchInfo.id)}` : `Varım / Yokum demek için: ${matchLink(matchInfo.id)}`);
+    return lines.join('\n');
+  };
+
+  const handleShareRoster = async () => {
+    const message = buildRosterText();
+    // Bilgisayar tarayıcılarında paylaşım menüsü yok: panoya kopyala.
+    if (Platform.OS === 'web' && typeof navigator !== 'undefined' && !(navigator as any).share) {
+      try {
+        await navigator.clipboard.writeText(message);
+        Alert.alert('Kopyalandı', 'Kadro kopyalandı. WhatsApp grubuna yapıştırabilirsin.');
+      } catch {
+        Alert.alert('Kadro', message);
+      }
+      return;
+    }
+    try {
+      await Share.share({ message });
+    } catch (e) {
+      Alert.alert('Hata', 'Paylaşım yapılamadı.');
+    }
+  };
+
   const handleRestoreMatch = async () => {
     try {
       const res = await apiFetch(`${API_URL}/matches/${matchInfo.id}/restore`, { method: 'POST' });
@@ -661,16 +718,21 @@ export default function MatchDetailsScreen({ route, navigation }: any) {
           <Ionicons name="chevron-back" size={28} color="#FFFFFF" />
         </TouchableOpacity>
         <Text style={styles.headerTitle}>Maç Detayları</Text>
-        <TouchableOpacity
-          style={styles.backButton}
-          onPress={() => {
-            fetchMatchInfo();
-            fetchPlayers();
-            fetchMvp();
-          }}
-        >
-          <Ionicons name="refresh" size={24} color="#00E676" />
-        </TouchableOpacity>
+        <View style={{ flexDirection: 'row' }}>
+          <TouchableOpacity style={styles.backButton} onPress={handleShareRoster} accessibilityLabel="Kadroyu paylaş (üst)">
+            <Ionicons name="share-social-outline" size={23} color="#38BDF8" />
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={styles.backButton}
+            onPress={() => {
+              fetchMatchInfo();
+              fetchPlayers();
+              fetchMvp();
+            }}
+          >
+            <Ionicons name="refresh" size={24} color="#00E676" />
+          </TouchableOpacity>
+        </View>
       </View>
 
       <ScrollView
@@ -846,14 +908,20 @@ export default function MatchDetailsScreen({ route, navigation }: any) {
           </View>
         </View>}
 
-        {!isCompleted && !isCancelled && (
-          <TouchableOpacity style={styles.guestBtn} onPress={() => setGuestModal(true)} activeOpacity={0.8}>
-            <Ionicons name="person-add-outline" size={18} color="#00E676" />
-            <Text style={styles.guestBtnText}>
-              Misafir ekle{myGuests.length ? ` · ${myGuests.length} misafirin var` : ''}
-            </Text>
+        <View style={{ flexDirection: 'row', gap: 10, marginBottom: 14 }}>
+          <TouchableOpacity style={[styles.guestBtn, styles.shareBtn]} onPress={handleShareRoster} activeOpacity={0.8} accessibilityLabel="Kadroyu paylaş">
+            <Ionicons name="share-social-outline" size={18} color="#38BDF8" />
+            <Text style={[styles.guestBtnText, { color: '#38BDF8' }]}>Kadroyu paylaş</Text>
           </TouchableOpacity>
-        )}
+          {!isCompleted && !isCancelled && (
+            <TouchableOpacity style={styles.guestBtn} onPress={() => setGuestModal(true)} activeOpacity={0.8}>
+              <Ionicons name="person-add-outline" size={18} color="#00E676" />
+              <Text style={styles.guestBtnText} numberOfLines={1}>
+                Misafir ekle{myGuests.length ? ` (${myGuests.length})` : ''}
+              </Text>
+            </TouchableOpacity>
+          )}
+        </View>
 
         {!teamsDivided ? (
           <View style={styles.playersContainer}>
@@ -1383,7 +1451,8 @@ const styles = StyleSheet.create({
   editChipOn: { backgroundColor: '#00E676', borderColor: '#00E676' },
   editChipText: { color: '#E2E8F0', fontWeight: '600', fontSize: 14 },
   guestLine: { color: '#38BDF8', fontSize: 12, marginTop: 2 },
-  guestBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, borderWidth: 1, borderStyle: 'dashed', borderColor: 'rgba(0, 230, 118, 0.45)', borderRadius: 12, paddingVertical: 11, marginBottom: 14 },
+  guestBtn: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, borderWidth: 1, borderStyle: 'dashed', borderColor: 'rgba(0, 230, 118, 0.45)', borderRadius: 12, paddingVertical: 11 },
+  shareBtn: { borderStyle: 'solid', borderColor: 'rgba(56, 189, 248, 0.45)', backgroundColor: 'rgba(56, 189, 248, 0.08)' },
   guestBtnText: { color: '#00E676', fontWeight: '600', fontSize: 14 },
   guestAddBtn: { backgroundColor: '#00E676', borderRadius: 12, paddingHorizontal: 16, flexShrink: 0, paddingVertical: 14, marginLeft: 8 },
   guestAddBtnText: { color: '#0F172A', fontWeight: '700', fontSize: 15 },

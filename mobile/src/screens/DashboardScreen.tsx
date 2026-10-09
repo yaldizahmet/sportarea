@@ -24,7 +24,7 @@ import { API_URL } from "../config/api";
 import { formatMatchDate, formatWeekly, isPastMatch, DAY_NAMES_SHORT, formatMoney, shareOf } from "../utils/format";
 import ChangePasswordModal from "../components/ChangePasswordModal";
 import { registerForPush, matchIdFromResponse } from "../utils/push";
-import { consumePendingInvite } from "../utils/invite";
+import { consumePendingInvite, consumePendingMatch } from "../utils/invite";
 
 // Maç kartında "benim cevabım" rozeti
 const MY_STATUS_BADGE: Record<string, { label: string; color: string; bg: string; border: string }> = {
@@ -131,10 +131,15 @@ export default function DashboardScreen({ route, navigation }: any) {
   };
 
   // Davet linkiyle gelip kayıt olduysa / giriş yaptıysa gruba otomatik katıl ve grubu aç.
+  // Paylaşılan maç linkiyle geldiyse doğrudan o maçı aç.
   useEffect(() => {
     (async () => {
       const joined = await consumePendingInvite();
-      if (!joined) return;
+      if (!joined) {
+        const matchId = await consumePendingMatch();
+        if (matchId) navigation.navigate("MatchDetails", { match: { id: matchId }, user });
+        return;
+      }
       await fetchData();
       showAlert(
         joined.alreadyMember ? "Zaten gruptasın" : "Gruba katıldın 🎉",

@@ -58,3 +58,29 @@ export async function consumePendingInvite(): Promise<{ group: any; alreadyMembe
     return null; // ağ hatası: kod saklı kalır, sonraki açılışta tekrar denenir
   }
 }
+
+// Maç linki: https://sportarea.onrender.com/?mac=<id>
+// Kadro paylaşımında kullanılır; açan kişi (giriş yaptıktan sonra) doğrudan o maçın sayfasına gider.
+const MATCH_KEY = 'pendingMatch';
+export const matchLink = (id: string) => `${WEB_URL}/?mac=${encodeURIComponent(id)}`;
+
+export async function captureMatchFromUrl(): Promise<string | null> {
+  if (Platform.OS !== 'web' || typeof window === 'undefined') return null;
+  try {
+    const url = new URL(window.location.href);
+    const id = (url.searchParams.get('mac') || '').trim();
+    if (!id) return null;
+    await AsyncStorage.setItem(MATCH_KEY, id);
+    url.searchParams.delete('mac');
+    window.history.replaceState(null, '', url.pathname + (url.search ? url.search : '') + url.hash);
+    return id;
+  } catch {
+    return null;
+  }
+}
+
+export async function consumePendingMatch(): Promise<string | null> {
+  const id = await AsyncStorage.getItem(MATCH_KEY);
+  if (id) await AsyncStorage.removeItem(MATCH_KEY);
+  return id;
+}

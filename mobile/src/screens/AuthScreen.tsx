@@ -18,7 +18,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { StatusBar } from 'expo-status-bar';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { API_URL } from '../config/api';
-import { captureInviteFromUrl, getPendingInvite, previewInvite } from '../utils/invite';
+import { captureInviteFromUrl, captureMatchFromUrl, getPendingInvite, previewInvite } from '../utils/invite';
 
 export default function AuthScreen({ navigation }: any) {
   const [email, setEmail] = useState('');
@@ -105,6 +105,7 @@ export default function AuthScreen({ navigation }: any) {
     (async () => {
       // Davet linkiyle gelindiyse grubu göster; yeni gelen büyük ihtimalle kayıt olacak.
       await captureInviteFromUrl();
+      await captureMatchFromUrl();
       const code = await getPendingInvite();
       if (code) {
         const p = await previewInvite(code);
