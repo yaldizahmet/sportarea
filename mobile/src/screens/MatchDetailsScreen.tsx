@@ -21,7 +21,8 @@ import { Ionicons } from "@expo/vector-icons";
 import { StatusBar } from "expo-status-bar";
 import { API_URL } from "../config/api";
 import { matchLink } from "../utils/invite";
-import { formatMatchDate, formatClock, formatMoney, shareOf, DAY_NAMES_SHORT } from "../utils/format";
+import { formatMatchDate, formatClock, formatMoney, shareOf, DAY_NAMES_SHORT, displayName, realNameHint } from "../utils/format";
+import Avatar from "../components/Avatar";
 
 const EDIT_HOURS = ['18:00', '19:00', '20:00', '21:00', '22:00', '23:00', '00:00'];
 const EDIT_LOCKOUTS = [0, 1, 3, 6, 12];
@@ -283,7 +284,7 @@ export default function MatchDetailsScreen({ route, navigation }: any) {
        });
        if(res.ok) {
          setRatingModalVisible(false);
-         Alert.alert('Başarılı', `${ratingTarget.name} adlı oyuncuyu puanladınız!`);
+         Alert.alert('Başarılı', `${displayName(ratingTarget)} adlı oyuncuyu puanladınız!`);
        } else {
          const d = await res.json();
          Alert.alert('Hata', d.error || 'Puanlama yapılamadı.');
@@ -396,8 +397,8 @@ export default function MatchDetailsScreen({ route, navigation }: any) {
   // Kadroyu metin olarak paylaş (WhatsApp grubuna atmak için): kim var, kaç yer kaldı, kim cevap vermedi.
   const buildRosterText = () => {
     const nameOf = (p: any) => p.isGuest
-      ? `${p.name} (misafir${p.invitedByName ? ` · ${p.invitedByName}` : ''})`
-      : String(p.name);
+      ? `${p.name} (misafir${p.invitedByName ? ` · ${displayName({ name: p.invitedByName, nickname: p.invitedByNickname })}` : ''})`
+      : displayName(p);
     const max = Number(matchInfo.maxPlayers) || activePlayers.length;
     const lines: string[] = [];
     lines.push(`⚽ ${matchInfo.groupName ? `${matchInfo.groupName} · ` : ''}${formatMatchDate({ ...matchInfo, matchTimestamp })}`);
@@ -668,18 +669,14 @@ export default function MatchDetailsScreen({ route, navigation }: any) {
       <Wrapper key={player.id ?? idx} style={styles.playerCard} onPress={canRate ? () => openRatingModal(player) : undefined}>
         <View style={styles.playerLeft}>
           <View style={styles.playerAvatar}>
-            {player.avatar ? (
-               <Image source={{uri: player.avatar}} style={{width: 40, height: 40, borderRadius: 20}} />
-            ) : (
-               <Text style={styles.playerInitial}>{String(player.name?.charAt(0) || "?")}</Text>
-            )}
+            <Avatar user={player} size={40} initialStyle={styles.playerInitial} />
           </View>
-          <View>
-            <Text style={styles.playerName}>{String(player.name)}</Text>
+          <View style={{ flexShrink: 1 }}>
+            <Text style={styles.playerName} numberOfLines={1}>{displayName(player)}</Text>
             {player.isGuest ? (
-              <Text style={styles.guestLine}>Misafir{player.invitedByName ? ` · ${player.invitedBy === user.id ? 'senin' : `${player.invitedByName} getirdi`}` : ''}</Text>
+              <Text style={styles.guestLine}>Misafir{player.invitedByName ? ` · ${player.invitedBy === user.id ? 'senin' : `${displayName({ name: player.invitedByName, nickname: player.invitedByNickname })} getirdi`}` : ''}</Text>
             ) : (
-              <Text style={styles.playerPosition}>{String(player.position || "Orta Saha")}</Text>
+              <Text style={styles.playerPosition} numberOfLines={1}>{realNameHint(player) ? `${realNameHint(player)} · ` : ''}{String(player.position || "Orta Saha")}</Text>
             )}
             {player.goals > 0 && <Text style={{color: '#00E676', fontSize: 12, marginTop: 3, fontWeight: 'bold'}}>⚽ {player.goals} Gol</Text>}
             {pitchFee && !isCancelled && player.status === 'ACTIVE' ? (
@@ -854,14 +851,14 @@ export default function MatchDetailsScreen({ route, navigation }: any) {
           <View style={styles.mvpCard}>
             <Text style={styles.mvpLabel}>🏆 MAÇIN YILDIZI</Text>
             {matchMvp ? (
-              <Text style={styles.mvpName}>{String(matchMvp.name)} <Text style={styles.mvpVotes}>· {String(matchMvp.voteCount)} oy</Text></Text>
+              <Text style={styles.mvpName}>{displayName(matchMvp)} <Text style={styles.mvpVotes}>· {String(matchMvp.voteCount)} oy</Text></Text>
             ) : (
               <Text style={styles.mvpEmpty}>Henüz kimse oy vermedi.</Text>
             )}
             {iPlayed ? (
               <>
                 {myMvpVote ? (
-                  <Text style={styles.mvpMine}>✓ Oyun: {String(myMvpVote.name)}</Text>
+                  <Text style={styles.mvpMine}>✓ Oyun: {displayName(myMvpVote)}</Text>
                 ) : (
                   <TouchableOpacity style={styles.mvpBtn} onPress={() => setMvpModalVisible(true)} activeOpacity={0.85}>
                     <Text style={styles.mvpBtnText}>MVP'ye oy ver</Text>
@@ -1244,7 +1241,7 @@ export default function MatchDetailsScreen({ route, navigation }: any) {
                   <Text style={{color: '#94A3B8', fontSize: 13, marginBottom: 10}}>Golcüler:</Text>
                   {activePlayers.map((p: any) => (
                      <View key={p.id} style={{flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10, backgroundColor: 'rgba(255,255,255,0.05)', padding: 10, borderRadius: 10}}>
-                        <Text style={{color: '#FFF', flex: 1}} numberOfLines={1}>{p.name}{p.team === 'A' || p.team === 'B' ? ` (${p.team} Takımı)` : ''}</Text>
+                        <Text style={{color: '#FFF', flex: 1}} numberOfLines={1}>{displayName(p)}{p.team === 'A' || p.team === 'B' ? ` (${p.team} Takımı)` : ''}</Text>
                         <View style={{flexDirection: 'row', alignItems: 'center'}}>
                            <TouchableOpacity style={{backgroundColor: '#334155', width: 28, height: 28, borderRadius: 14, alignItems: 'center', justifyContent: 'center'}} onPress={() => setPlayerGoals(prev => ({...prev, [p.id]: Math.max(0, (prev[p.id] || 0) - 1)}))}>
                               <Text style={{color: '#FFF', fontWeight: 'bold'}}>-</Text>
@@ -1275,7 +1272,7 @@ export default function MatchDetailsScreen({ route, navigation }: any) {
       <Modal visible={ratingModalVisible} transparent animationType="slide">
         <View style={styles.modalOverlay}>
           <View style={styles.modalContent}>
-            <Text style={styles.modalTitle}>{ratingTarget?.name} Skorla!</Text>
+            <Text style={styles.modalTitle}>{displayName(ratingTarget)} Skorla!</Text>
             
             <Text style={{ color: '#94A3B8', textAlign: 'center', marginBottom: 16 }}>Bu maçtaki performansına göre her özellik için bir seviye seç.</Text>
             {(['speed', 'shoot', 'pass', 'physique'] as const).map(skill => {
@@ -1329,7 +1326,7 @@ export default function MatchDetailsScreen({ route, navigation }: any) {
                      >
                         <Text style={{color: '#FFD700', fontWeight: 'bold', fontSize: 18, marginRight: 15}}>{idx + 1}</Text>
                         <View style={{flex: 1}}>
-                           <Text style={{color: '#FFF', fontSize: 16, fontWeight: 'bold'}}>{p.name}</Text>
+                           <Text style={{color: '#FFF', fontSize: 16, fontWeight: 'bold'}}>{displayName(p)}</Text>
                            <Text style={{color: '#A0A0A0', fontSize: 12}}>{p.position || 'Oyuncu'} • {p.team === 'A' ? 'A Takımı' : (p.team === 'B' ? 'B Takımı' : 'Belirsiz')}</Text>
                         </View>
                         <Ionicons name="chevron-forward" size={20} color="#FFD700" />
@@ -1381,7 +1378,7 @@ export default function MatchDetailsScreen({ route, navigation }: any) {
                 const coords = getCoordinates(suggestedTeamA, true);
                 return suggestedTeamA.map((p) => {
                   const pos = coords[p.id] || { x: 160, y: 100 };
-                  const firstName = p.name ? p.name.split(' ')[0] : 'Oyuncu';
+                  const firstName = p.nickname ? String(p.nickname) : p.name ? String(p.name).split(' ')[0] : 'Oyuncu';
                   return (
                     <View key={p.id} style={[styles.pitchPlayerMarker, { left: pos.x - 18, top: pos.y - 18, backgroundColor: '#2196F3' }]}>
                       <Text style={styles.pitchPlayerText}>{p.overall}</Text>
@@ -1398,7 +1395,7 @@ export default function MatchDetailsScreen({ route, navigation }: any) {
                 const coords = getCoordinates(suggestedTeamB, false);
                 return suggestedTeamB.map((p) => {
                   const pos = coords[p.id] || { x: 160, y: 340 };
-                  const firstName = p.name ? p.name.split(' ')[0] : 'Oyuncu';
+                  const firstName = p.nickname ? String(p.nickname) : p.name ? String(p.name).split(' ')[0] : 'Oyuncu';
                   return (
                     <View key={p.id} style={[styles.pitchPlayerMarker, { left: pos.x - 18, top: pos.y - 18, backgroundColor: '#F44336' }]}>
                       <Text style={styles.pitchPlayerText}>{p.overall}</Text>

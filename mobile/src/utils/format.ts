@@ -72,3 +72,23 @@ export function formatMoney(n?: number | null) {
 // Kişi başı saha payı (sunucudaki hesapla aynı: yukarı yuvarlanır)
 export const shareOf = (fee?: number | null, players?: number) =>
   fee && players && players > 0 ? Math.ceil(fee / players) : null;
+
+// Görünen ad: lakap varsa lakap, yoksa "Ahmet Y." (ad + soyadın baş harfi). Misafir adı yazıldığı gibi.
+// Sunucudaki displayName (server/index.ts) ile aynı kural.
+export function shortName(name?: string | null) {
+  const parts = String(name ?? '').trim().split(/\s+/).filter(Boolean);
+  if (parts.length < 2) return parts[0] ?? '';
+  const last = parts.pop() as string;
+  return `${parts.join(' ')} ${last.charAt(0).toLocaleUpperCase('tr-TR')}.`;
+}
+export function displayName(p?: { name?: string | null; nickname?: string | null; isGuest?: boolean } | null) {
+  if (!p) return '';
+  if (p.isGuest) return String(p.name ?? '');
+  const nick = String(p.nickname ?? '').trim();
+  return nick || shortName(p.name);
+}
+// Lakabı olanın altında küçük yazıyla kim olduğu ("Ahmet Y."); lakabı yoksa boş.
+export function realNameHint(p?: { name?: string | null; nickname?: string | null; isGuest?: boolean } | null) {
+  if (!p || p.isGuest || !String(p.nickname ?? '').trim()) return '';
+  return shortName(p.name);
+}

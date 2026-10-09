@@ -44,6 +44,21 @@ const authLimiter = rateLimit({
   message: { error: 'Çok fazla deneme yaptınız, lütfen 15 dakika sonra tekrar deneyin.' }
 });
 
+// Görünen ad: lakap varsa lakap, yoksa "Ahmet Y." (ad + soyadın baş harfi). Misafir adı yazıldığı gibi.
+// Uygulamadaki displayName (mobile/src/utils/format.ts) ile aynı kural.
+const shortName = (name: string) => {
+  const parts = String(name ?? '').trim().split(/\s+/).filter(Boolean);
+  if (parts.length < 2) return parts[0] ?? '';
+  const last = parts.pop() as string;
+  return `${parts.join(' ')} ${last.charAt(0).toLocaleUpperCase('tr-TR')}.`;
+};
+const displayName = (u: any) => {
+  if (!u) return '';
+  if (u.role === 'GUEST') return String(u.name ?? '');
+  const nick = String(u.nickname ?? '').trim();
+  return nick || shortName(u.name);
+};
+
 const toSafeUser = (user: any) => {
   if (!user) return user;
   const { password, ...safeUser } = user;
@@ -474,7 +489,7 @@ app.get('/api/groups/:id/members', async (req, res) => {
     const { id } = req.params;
     if (!(await isGroupMember(id, req.user.id))) return res.status(403).json({ error: 'Bu grubun üyesi değilsiniz.' });
     const members = await db.all(`
-      SELECT u.id, u.name, u.avatar, u.position, gm."alwaysIn",
+      SELECT u.id, u.name, u.nickname, u.avatar, u.position, gm."alwaysIn",
         (SELECT COUNT(*) FROM "MatchPlayers" mp JOIN "Matches" m ON m.id = mp."matchId"
           WHERE mp."userId" = u.id AND m."groupId" = gm."groupId" AND m.status = 'COMPLETED') AS matches
       FROM "User" u
@@ -734,12 +749,31 @@ app.delete('/api/groups/:id', async (req, res) => {
   }
 });
 
+// Lakap (boş = kaldır). Görünen ad: lakap, yoksa "Ahmet Y."
+app.put('/api/me/profile', async (req, res) => {
+  try {
+    const nickname = String(req.body?.nickname ?? '').trim().replace(/\s+/g, ' ');
+    if (nickname.length > 20) return res.status(400).json({ error: 'Lakap en fazla 20 karakter olabilir.' });
+    await db.run('UPDATE "User" SET nickname = ? WHERE id = ?', [nickname || null, req.user.id]);
+    res.json({ message: nickname ? 'Lakabın kaydedildi.' : 'Lakap kaldırıldı.', nickname: nickname || null });
+  } catch (e) {
+    res.status(500).json({ error: 'Kaydedilemedi.' });
+  }
+});
+
+// Avatar: galeriden küçültülmüş JPEG (data URL), "emoji:⚽" biçiminde emoji ya da null (kaldır).
+const validAvatar = (a: any) =>
+  a === null || a === '' ||
+  (typeof a === 'string' && a.startsWith('data:image/') && a.length <= 400_000) ||
+  (typeof a === 'string' && a.startsWith('emoji:') && a.length <= 20);
+
 app.post('/api/users/:id/avatar', async (req, res) => {
   if (req.params.id !== req.user.id) return res.status(403).json({ error: 'Yetkisiz erişim' });
   try {
     const { id } = req.params;
-    const { avatar } = req.body;
-    await db.run('UPDATE "User" SET avatar = ? WHERE id = ?', [avatar, id]);
+    const avatar = req.body?.avatar ?? null;
+    if (!validAvatar(avatar)) return res.status(400).json({ error: 'Geçersiz avatar.' });
+    await db.run('UPDATE "User" SET avatar = ? WHERE id = ?', [avatar || null, id]);
     res.json({ message: 'Avatar başarıyla güncellendi!' });
   } catch (error) {
     res.status(500).json({ error: 'Avatar güncellenirken hata oluştu.' });
@@ -765,7 +799,7 @@ app.get('/api/leaderboard', async (req, res) => {
     if (groupId) {
       if (!(await isGroupMember(groupId, req.user.id))) return res.status(403).json({ error: 'Bu grubun üyesi değilsin.' });
       const rows = await db.all(`
-        SELECT u.id, u.name, u.avatar, u.position,
+        SELECT u.id, u.name, u.nickname, u.avatar, u.position,
                COALESCE(mp.matches, 0) AS matches,
                COALESCE(mp.goals, 0) AS goals,
                COALESCE(v.mvp, 0) AS mvp,
@@ -794,14 +828,14 @@ app.get('/api/leaderboard', async (req, res) => {
         let score = u.rating_count > 0 ? Math.round(u.avg_all) : 60;
         score += (u.matches > 5 ? 2 : 0) + (u.goals > 10 ? 3 : 0);
         return {
-          id: u.id, name: u.name, avatar: u.avatar, position: u.position,
+          id: u.id, name: u.name, nickname: u.nickname, avatar: u.avatar, position: u.position,
           matches: u.matches, goals: u.goals, mvp: u.mvp, score: Math.min(score, 99),
         };
       }));
     }
 
     const rows = await db.all(`
-      SELECT u.id, u.name, u.avatar, u.position,
+      SELECT u.id, u.name, u.nickname, u.avatar, u.position,
              COALESCE(mp.matches, 0) AS matches,
              COALESCE(mp.goals, 0) AS goals,
              r.avg_all, COALESCE(r.c, 0) AS rating_count
@@ -828,7 +862,7 @@ app.get('/api/leaderboard', async (req, res) => {
       let score = u.rating_count > 0 ? Math.round(u.avg_all) : 60;
       score += (u.matches > 5 ? 2 : 0) + (u.goals > 10 ? 3 : 0);
       return {
-        id: u.id, name: u.name, avatar: u.avatar, position: u.position,
+        id: u.id, name: u.name, nickname: u.nickname, avatar: u.avatar, position: u.position,
         matches: u.matches, goals: u.goals, score: score > 99 ? 99 : score
       };
     });
@@ -1290,8 +1324,8 @@ app.get('/api/matches/:id/players', async (req, res) => {
   try {
     const { id } = req.params;
     const players: any[] = await db.all(`
-      SELECT u.id, u.name, u.avatar, u.position, mp.team, mp.goals, mp.status, mp.paid,
-             (u.role = 'GUEST') AS "isGuest", mp."invitedBy", inv.name AS "invitedByName"
+      SELECT u.id, u.name, u.nickname, u.avatar, u.position, mp.team, mp.goals, mp.status, mp.paid,
+             (u.role = 'GUEST') AS "isGuest", mp."invitedBy", inv.name AS "invitedByName", inv.nickname AS "invitedByNickname"
       FROM "MatchPlayers" mp
       JOIN "User" u ON mp."userId" = u.id
       LEFT JOIN "User" inv ON inv.id = mp."invitedBy"
@@ -1304,7 +1338,7 @@ app.get('/api/matches/:id/players', async (req, res) => {
       // Gruptaki, "Varım" demeyen üyeler: verdikleri cevaba göre DECLINED (yokum), MAYBE (belki)
       // ya da hiç cevap vermediyse PENDING.
       const others = await db.all(`
-        SELECT u.id, u.name, u.avatar, u.position, r.response
+        SELECT u.id, u.name, u.nickname, u.avatar, u.position, r.response
         FROM "GroupMembers" gm
         JOIN "User" u ON gm."userId" = u.id
         LEFT JOIN "MatchResponses" r ON r."matchId" = ? AND r."userId" = u.id
@@ -1317,6 +1351,7 @@ app.get('/api/matches/:id/players', async (req, res) => {
         players.push({
           id: gm.id,
           name: gm.name,
+          nickname: gm.nickname,
           avatar: gm.avatar,
           position: gm.position,
           team: 'NONE',
@@ -1411,11 +1446,11 @@ async function respondToMatch(matchId: string, userId: string, response: MatchAn
       await clearInvite();
 
       if (matchRow.creatorId && matchRow.creatorId !== userId) {
-        const who = await t.get('SELECT name FROM "User" WHERE id = ?', [userId]);
+        const who = await t.get('SELECT name, nickname FROM "User" WHERE id = ?', [userId]);
         await t.run('INSERT INTO "Notifications" (id, "userId", message, type) VALUES (?, ?, ?, ?)', [
           randomUUID(),
           matchRow.creatorId,
-          `${who?.name || 'Bir oyuncu'} ${matchRow.location} maçına ${isReserve ? 'yedek olarak ' : ''}katıldı!`,
+          `${displayName(who) || 'Bir oyuncu'} ${matchRow.location} maçına ${isReserve ? 'yedek olarak ' : ''}katıldı!`,
           'JOIN'
         ]);
       }
@@ -1532,10 +1567,10 @@ app.post('/api/matches/:id/guests', async (req, res) => {
       await t.run('INSERT INTO "MatchPlayers" ("matchId", "userId", status, "invitedBy") VALUES (?, ?, ?, ?)', [matchId, guestId, status, hostId]);
 
       if (m.creatorId && m.creatorId !== hostId) {
-        const host = await t.get('SELECT name FROM "User" WHERE id = ?', [hostId]);
+        const host = await t.get('SELECT name, nickname FROM "User" WHERE id = ?', [hostId]);
         await t.run('INSERT INTO "Notifications" (id, "userId", message, type) VALUES (?, ?, ?, ?)', [
           randomUUID(), m.creatorId,
-          `${host?.name || 'Bir oyuncu'}, ${m.location} maçına misafir ekledi: ${name}${full ? ' (yedek)' : ''}`,
+          `${displayName(host) || 'Bir oyuncu'}, ${m.location} maçına misafir ekledi: ${name}${full ? ' (yedek)' : ''}`,
           'JOIN',
         ]);
       }
@@ -1637,7 +1672,7 @@ const saveTeams = (matchId: string, teamA: string[], teamB: string[]) =>
   });
 
 const activePlayers = (matchId: string) => db.all(`
-  SELECT u.id, u.name, u.avatar, u.position
+  SELECT u.id, u.name, u.nickname, u.avatar, u.position
   FROM "MatchPlayers" mp
   JOIN "User" u ON mp."userId" = u.id
   WHERE mp."matchId" = ? AND mp.status = 'ACTIVE'
@@ -1800,7 +1835,7 @@ async function postMatchCheck(matchId: string, fromId: string, toId: string): Pr
 app.get('/api/matches/:id/mvp', async (req, res) => {
   try {
     const top = await db.get(`
-      SELECT u.id, u.name, u.avatar, u.position, COUNT(*) AS "voteCount"
+      SELECT u.id, u.name, u.nickname, u.avatar, u.position, COUNT(*) AS "voteCount"
       FROM "MvpVotes" v JOIN "User" u ON u.id = v."votedId"
       WHERE v."matchId" = ?
       GROUP BY u.id
@@ -1808,7 +1843,7 @@ app.get('/api/matches/:id/mvp', async (req, res) => {
       LIMIT 1
     `, [req.params.id]);
     const mine = await db.get(`
-      SELECT u.id, u.name FROM "MvpVotes" v JOIN "User" u ON u.id = v."votedId"
+      SELECT u.id, u.name, u.nickname FROM "MvpVotes" v JOIN "User" u ON u.id = v."votedId"
       WHERE v."matchId" = ? AND v."voterId" = ?
     `, [req.params.id, req.user.id]);
     res.json({ mvp: top ?? null, myVote: mine ?? null });

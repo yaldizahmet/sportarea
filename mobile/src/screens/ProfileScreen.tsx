@@ -24,6 +24,8 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { API_URL } from '../config/api';
 import { unregisterPush } from '../utils/push';
 import ChangePasswordModal from '../components/ChangePasswordModal';
+import Avatar, { AVATAR_EMOJIS } from '../components/Avatar';
+import { displayName, shortName } from '../utils/format';
 
 export default function ProfileScreen({ navigation, route }: any) {
   const user = route.params?.user || { name: 'Oyuncu', id: '' };
@@ -38,6 +40,10 @@ export default function ProfileScreen({ navigation, route }: any) {
 
   const [avatarUrl, setAvatarUrl] = useState(user.avatar || '');
   const [avatarSaving, setAvatarSaving] = useState(false);
+  const [avatarModal, setAvatarModal] = useState(false);
+  const [nickname, setNickname] = useState<string>(user.nickname || '');
+  const [nickModal, setNickModal] = useState(false);
+  const [nickInput, setNickInput] = useState('');
 
   const [isPositionModalVisible, setPositionModalVisible] = useState(false);
   const [passwordModal, setPasswordModal] = useState(false);
@@ -109,6 +115,41 @@ export default function ProfileScreen({ navigation, route }: any) {
     else Alert.alert(title, msg);
   };
 
+  const saveAvatar = async (value: string | null) => {
+    setAvatarSaving(true);
+    try {
+      const res = await apiFetch(`${API_URL}/users/${user.id}/avatar`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ avatar: value }),
+      });
+      if (!res.ok) throw new Error('save failed');
+      setAvatarUrl(value || '');
+      user.avatar = value; // önceki ekranlara dönünce de güncel görünsün
+      setAvatarModal(false);
+    } catch (e) {
+      notify('Hata', 'Avatar kaydedilemedi. Tekrar dener misin?');
+    }
+    setAvatarSaving(false);
+  };
+
+  const saveNickname = async () => {
+    try {
+      const res = await apiFetch(`${API_URL}/me/profile`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ nickname: nickInput }),
+      });
+      const data = await res.json();
+      if (!res.ok) return notify('Olmadı', data.error || 'Kaydedilemedi.');
+      setNickname(data.nickname || '');
+      user.nickname = data.nickname || null;
+      setNickModal(false);
+    } catch (e) {
+      notify('Hata', 'Bağlantı sorunu yaşandı.');
+    }
+  };
+
   // Galeriden fotoğraf seç -> kare kırp -> 256 px'e küçült -> JPEG olarak kaydet.
   // Küçük tutuyoruz ki üye listeleri ve kadro hızlı yüklensin (yaklaşık 15-30 KB).
   const pickAvatar = async () => {
@@ -120,6 +161,7 @@ export default function ProfileScreen({ navigation, route }: any) {
         quality: 1,
       });
       if (result.canceled || !result.assets?.[0]) return;
+      setAvatarModal(false);
 
       setAvatarSaving(true);
       const rendered = await ImageManipulator.manipulate(result.assets[0].uri).resize({ width: 256 }).renderAsync();
@@ -183,7 +225,7 @@ export default function ProfileScreen({ navigation, route }: any) {
         
         {/* Profile Info - FIFA Style Card */}
         <View style={{alignItems: 'center', marginVertical: 20, marginTop: 30}}>
-          <TouchableOpacity activeOpacity={0.9} onPress={pickAvatar} disabled={avatarSaving}>
+          <TouchableOpacity activeOpacity={0.9} onPress={() => setAvatarModal(true)} disabled={avatarSaving}>
             <LinearGradient colors={['#FACC15', '#A16207']} style={styles.fifaCardBg}>
                <View style={styles.fifaCardInner}>
                  <View style={styles.fifaTopLeft}>
@@ -193,13 +235,11 @@ export default function ProfileScreen({ navigation, route }: any) {
                  <View style={styles.fifaAvatarContainer}>
                     {avatarSaving ? (
                       <ActivityIndicator color="#A16207" />
-                    ) : avatarUrl ? (
-                      <Image source={{ uri: avatarUrl }} style={styles.fifaAvatar} />
                     ) : (
-                      <Text style={styles.fifaAvatarInitial}>{user.name?.charAt(0) || 'O'}</Text>
+                      <Avatar user={{ name: user.name, nickname }} avatar={avatarUrl || null} size={106} initialStyle={styles.fifaAvatarInitial} />
                     )}
                  </View>
-                 <Text style={styles.fifaName} numberOfLines={1}>{user.name}</Text>
+                 <Text style={styles.fifaName} numberOfLines={1}>{displayName({ name: user.name, nickname })}</Text>
                  
                  <View style={styles.fifaDivider} />
                  
@@ -218,6 +258,15 @@ export default function ProfileScreen({ navigation, route }: any) {
              <Text style={{color: '#00E676', fontWeight: 'bold'}}>{user.position || 'Orta Saha'}</Text>
              <Ionicons name="pencil" size={14} color="#00E676" style={{marginLeft: 5}}/>
           </TouchableOpacity>
+
+          <TouchableOpacity onPress={() => { setNickInput(nickname); setNickModal(true); }} style={{marginTop: 12, flexDirection: 'row', alignItems: 'center'}}>
+             <Text style={{color: '#94A3B8', fontSize: 13}}>Lakap: </Text>
+             <Text style={{color: '#00E676', fontWeight: 'bold'}}>{nickname || 'Ekle'}</Text>
+             <Ionicons name="pencil" size={14} color="#00E676" style={{marginLeft: 5}}/>
+          </TouchableOpacity>
+          <Text style={{ color: '#64748B', fontSize: 12, marginTop: 6 }}>
+            Arkadaşların seni {nickname ? `"${nickname}"` : `"${shortName(user.name)}"`} olarak görür.
+          </Text>
 
         </View>
 
@@ -288,9 +337,9 @@ export default function ProfileScreen({ navigation, route }: any) {
         </View>
 
         {/* Buttons */}
-        <TouchableOpacity style={styles.editProfileButton} onPress={pickAvatar} disabled={avatarSaving}>
-          <Text style={styles.editProfileText}>{avatarSaving ? 'Kaydediliyor...' : 'Galeriden Fotoğraf Seç'}</Text>
-          <Ionicons name="camera-outline" size={20} color="#FFFFFF" style={{marginLeft: 10}} />
+        <TouchableOpacity style={styles.editProfileButton} onPress={() => setAvatarModal(true)} disabled={avatarSaving}>
+          <Text style={styles.editProfileText}>{avatarSaving ? 'Kaydediliyor...' : 'Fotoğraf / Avatar Değiştir'}</Text>
+          <Ionicons name="happy-outline" size={20} color="#FFFFFF" style={{marginLeft: 10}} />
         </TouchableOpacity>
 
         <TouchableOpacity style={[styles.editProfileButton, { marginTop: 12 }]} onPress={() => setPasswordModal(true)}>
@@ -309,6 +358,68 @@ export default function ProfileScreen({ navigation, route }: any) {
 
         <View style={{height: 50}} />
       </ScrollView>
+
+      {/* Avatar seçimi: galeriden fotoğraf ya da emoji */}
+      <Modal visible={avatarModal} transparent animationType="slide" onRequestClose={() => setAvatarModal(false)}>
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContent}>
+            <Text style={styles.modalTitle}>Fotoğraf ya da avatar</Text>
+            <TouchableOpacity style={styles.editProfileButton} onPress={pickAvatar} disabled={avatarSaving}>
+              <Ionicons name="image-outline" size={20} color="#FFFFFF" style={{ marginRight: 10 }} />
+              <Text style={styles.editProfileText}>Galeriden fotoğraf seç</Text>
+            </TouchableOpacity>
+            <Text style={{ color: '#94A3B8', fontSize: 13, marginTop: 18, marginBottom: 10 }}>ya da bir avatar seç</Text>
+            <View style={{ flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'center' }}>
+              {AVATAR_EMOJIS.map((e) => {
+                const on = avatarUrl === `emoji:${e}`;
+                return (
+                  <TouchableOpacity key={e} onPress={() => saveAvatar(`emoji:${e}`)} disabled={avatarSaving}
+                    style={[styles.emojiCell, on && { borderColor: '#00E676', backgroundColor: 'rgba(0,230,118,0.12)' }]}>
+                    <Text style={{ fontSize: 28 }}>{e}</Text>
+                  </TouchableOpacity>
+                );
+              })}
+            </View>
+            {avatarUrl ? (
+              <TouchableOpacity onPress={() => saveAvatar(null)} style={{ alignItems: 'center', marginTop: 14 }} disabled={avatarSaving}>
+                <Text style={{ color: '#94A3B8', textDecorationLine: 'underline' }}>Kaldır (baş harfim görünsün)</Text>
+              </TouchableOpacity>
+            ) : null}
+            <TouchableOpacity style={styles.cancelBtn} onPress={() => setAvatarModal(false)}>
+              <Text style={[styles.cancelBtnText, { color: '#CBD5E1' }]}>Kapat</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+
+      {/* Lakap */}
+      <Modal visible={nickModal} transparent animationType="slide" onRequestClose={() => setNickModal(false)}>
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContent}>
+            <Text style={styles.modalTitle}>Lakap</Text>
+            <Text style={{ color: '#94A3B8', textAlign: 'center', marginBottom: 14 }}>
+              Kadroda ve listelerde adın yerine lakabın görünür. Boş bırakırsan "{shortName(user.name)}" görünür.
+            </Text>
+            <TextInput
+              style={styles.nickInput}
+              value={nickInput}
+              onChangeText={setNickInput}
+              placeholder="Örn: Kaptan, Bomber, Duvar"
+              placeholderTextColor="#64748B"
+              maxLength={20}
+              autoFocus
+              returnKeyType="done"
+              onSubmitEditing={saveNickname}
+            />
+            <TouchableOpacity style={[styles.editProfileButton, { backgroundColor: '#00E676', borderColor: '#00E676', marginTop: 14 }]} onPress={saveNickname}>
+              <Text style={[styles.editProfileText, { color: '#0F172A' }]}>Kaydet</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={styles.cancelBtn} onPress={() => setNickModal(false)}>
+              <Text style={[styles.cancelBtnText, { color: '#CBD5E1' }]}>Vazgeç</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
 
       {/* Position Modal */}
       <Modal visible={isPositionModalVisible} transparent animationType="slide">
@@ -418,6 +529,8 @@ const styles = StyleSheet.create({
   modalContent: { backgroundColor: '#1E293B', borderTopLeftRadius: 30, borderTopRightRadius: 30, padding: 25, paddingBottom: 40, borderTopWidth: 1, borderTopColor: 'rgba(0, 230, 118, 0.3)' },
   modalTitle: { fontSize: 20, fontWeight: 'bold', color: '#FFFFFF', marginBottom: 20, textAlign: 'center' },
   cancelBtn: { paddingVertical: 15, alignItems: 'center' },
+  emojiCell: { width: 52, height: 52, margin: 5, borderRadius: 14, alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(255,255,255,0.05)', borderWidth: 1, borderColor: 'rgba(255,255,255,0.08)' },
+  nickInput: { backgroundColor: 'rgba(0,0,0,0.25)', color: '#FFFFFF', borderRadius: 12, paddingHorizontal: 14, paddingVertical: 14, fontSize: 17, borderWidth: 1, borderColor: 'rgba(255,255,255,0.1)' },
   cancelBtnText: { color: '#EF4444', fontSize: 16, fontWeight: 'bold' },
   positionOptionBtn: { paddingVertical: 15, borderBottomWidth: 1, borderBottomColor: 'rgba(255,255,255,0.05)', alignItems: 'center' },
   positionOptionText: { color: '#00E676', fontSize: 16, fontWeight: '500' },

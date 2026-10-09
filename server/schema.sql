@@ -213,3 +213,6 @@ alter table sportarea."MatchPlayers" add column "invitedBy" text references spor
 -- v7: İptal edilen maç silinmez, status = 'CANCELLED' olur.
 --     Maç saatinden sonra bitirilmemiş maç için yöneticiye bir kez hatırlatma.
 alter table sportarea."Matches" add column "finishReminderSentAt" timestamptz;
+
+-- v8: Lakap. Uygulamada görünen ad: lakap varsa lakap, yoksa "Ahmet Y."
+alter table sportarea."User" add column nickname text check (char_length(nickname) <= 20);

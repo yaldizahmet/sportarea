@@ -15,6 +15,8 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { StatusBar } from 'expo-status-bar';
 import { API_URL } from '../config/api';
+import Avatar from "../components/Avatar";
+import { displayName, realNameHint } from "../utils/format";
 
 type SortKey = 'score' | 'goals' | 'matches' | 'mvp';
 const SORTS: { key: SortKey; label: string }[] = [
@@ -80,7 +82,7 @@ export default function LeaderboardScreen({ navigation, route }: any) {
 
   // Eşitlikte maç sayısı fazla olan, o da eşitse isim sırası önce gelir.
   const sorted = [...players].sort(
-    (a, b) => (b[sortBy] || 0) - (a[sortBy] || 0) || (b.matches || 0) - (a.matches || 0) || String(a.name).localeCompare(String(b.name), 'tr')
+    (a, b) => (b[sortBy] || 0) - (a[sortBy] || 0) || (b.matches || 0) - (a.matches || 0) || displayName(a).localeCompare(displayName(b), 'tr')
   );
   const anyPlayed = players.some((p) => (p.matches || 0) > 0);
 
@@ -141,16 +143,12 @@ export default function LeaderboardScreen({ navigation, route }: any) {
                     : <Text style={styles.rankText}>{rank}</Text>}
                 </View>
                 <View style={styles.avatarMain}>
-                  {item.avatar ? (
-                    <Image source={{ uri: item.avatar }} style={{ width: 46, height: 46, borderRadius: 23 }} />
-                  ) : (
-                    <Text style={styles.avatarInitial}>{String(item.name || '?').charAt(0)}</Text>
-                  )}
+                  <Avatar user={item} size={46} initialStyle={styles.avatarInitial} />
                 </View>
                 <View style={{ flex: 1, marginLeft: 14 }}>
-                  <Text style={styles.playerName} numberOfLines={1}>{item.name}{isMe ? ' (sen)' : ''}</Text>
+                  <Text style={styles.playerName} numberOfLines={1}>{displayName(item)}{isMe ? ' (sen)' : ''}</Text>
                   <Text style={styles.playerMeta}>
-                    {item.matches || 0} maç · {item.goals || 0} gol · {item.mvp || 0} MVP
+                    {realNameHint(item) ? `${realNameHint(item)} · ` : ''}{item.matches || 0} maç · {item.goals || 0} gol · {item.mvp || 0} MVP
                   </Text>
                 </View>
                 <View style={styles.statScoreBg}>

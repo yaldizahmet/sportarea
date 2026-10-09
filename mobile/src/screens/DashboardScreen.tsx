@@ -25,6 +25,7 @@ import { formatMatchDate, formatWeekly, isPastMatch, DAY_NAMES_SHORT, formatMone
 import ChangePasswordModal from "../components/ChangePasswordModal";
 import { registerForPush, matchIdFromResponse } from "../utils/push";
 import { consumePendingInvite, consumePendingMatch } from "../utils/invite";
+import Avatar from "../components/Avatar";
 
 // Maç kartında "benim cevabım" rozeti
 const MY_STATUS_BADGE: Record<string, { label: string; color: string; bg: string; border: string }> = {
@@ -387,7 +388,7 @@ export default function DashboardScreen({ route, navigation }: any) {
         <View style={styles.header}>
           <View>
             <Text style={styles.greeting}>Merhaba,</Text>
-            <Text style={styles.userName}>{user.name}</Text>
+            <Text style={styles.userName} numberOfLines={1}>{user.nickname || String(user.name || '').split(' ')[0]}</Text>
           </View>
           <View style={{flexDirection: 'row', alignItems: 'center'}}>
             <TouchableOpacity style={{marginRight: 15, position: 'relative'}} onPress={handleOpenNotifications}>
@@ -400,7 +401,7 @@ export default function DashboardScreen({ route, navigation }: any) {
               style={styles.profileAvatar}
               onPress={() => navigation.navigate("Profile", { user })}
             >
-              <Ionicons name="person" size={24} color="#00E676" />
+              {user.avatar ? <Avatar user={user} size={44} /> : <Ionicons name="person" size={24} color="#00E676" />}
             </TouchableOpacity>
           </View>
         </View>

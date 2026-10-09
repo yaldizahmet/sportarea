@@ -20,6 +20,8 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
 import { StatusBar } from 'expo-status-bar';
 import { API_URL } from '../config/api';
+import Avatar from "../components/Avatar";
+import { displayName, realNameHint } from "../utils/format";
 import { DAY_NAMES, DAY_NAMES_SHORT, formatWeekly, formatMoney, shareOf } from '../utils/format';
 import { inviteLink } from '../utils/invite';
 
@@ -252,7 +254,7 @@ export default function GroupDetailsScreen({ route, navigation }: any) {
 
   // Şifresini unutan üyeye geçici şifre ver
   const handleResetPassword = (member: any) =>
-    confirmThen('Geçici şifre', `${member.name} için geçici şifre oluşturulsun mu? Eski şifresi geçersiz olur.`, 'Oluştur', async () => {
+    confirmThen('Geçici şifre', `${displayName(member)} için geçici şifre oluşturulsun mu? Eski şifresi geçersiz olur.`, 'Oluştur', async () => {
       try {
         const res = await apiFetch(`${API_URL}/groups/${group.id}/members/${member.id}/reset-password`, { method: 'POST' });
         const data = await res.json();
@@ -273,7 +275,7 @@ export default function GroupDetailsScreen({ route, navigation }: any) {
     });
 
   const handleRemoveMember = (member: any) =>
-    confirmThen('Üyeyi çıkar', `${member.name} gruptan çıkarılsın mı? Yaklaşan maçlardaki yeri yedeğe geçer.`, 'Çıkar', async () => {
+    confirmThen('Üyeyi çıkar', `${displayName(member)} gruptan çıkarılsın mı? Yaklaşan maçlardaki yeri yedeğe geçer.`, 'Çıkar', async () => {
       try {
         const res = await apiFetch(`${API_URL}/groups/${group.id}/members/${member.id}`, { method: 'DELETE' });
         const data = await res.json();
@@ -477,16 +479,12 @@ export default function GroupDetailsScreen({ route, navigation }: any) {
                 <View key={member.id} style={styles.memberCard}>
                   <View style={styles.memberLeft}>
                     <View style={[styles.memberAvatar, founder ? styles.founderAvatar : null]}>
-                      {member.avatar ? (
-                        <Image source={{ uri: member.avatar }} style={{ width: 44, height: 44, borderRadius: 22 }} />
-                      ) : (
-                        <Text style={styles.memberInitial}>{String(member.name?.charAt(0) || '?')}</Text>
-                      )}
+                      <Avatar user={member} size={44} initialStyle={styles.memberInitial} />
                     </View>
                     <View>
-                      <Text style={styles.memberName}>{String(member.name)}{member.id === user.id ? ' (sen)' : ''}</Text>
+                      <Text style={styles.memberName}>{displayName(member)}{member.id === user.id ? ' (sen)' : ''}</Text>
                       <Text style={styles.memberRole}>
-                        {founder ? 'Kurucu' : String(member.position || 'Oyuncu')}
+                        {realNameHint(member) ? `${realNameHint(member)} · ` : ''}{founder ? 'Kurucu' : String(member.position || 'Oyuncu')}
                         {member.alwaysIn ? ' · Her hafta' : ''}
                       </Text>
                     </View>
