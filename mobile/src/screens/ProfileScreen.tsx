@@ -26,6 +26,7 @@ import { unregisterPush } from '../utils/push';
 import ChangePasswordModal from '../components/ChangePasswordModal';
 import Avatar, { AVATAR_EMOJIS } from '../components/Avatar';
 import { displayName, shortName } from '../utils/format';
+import { versionLabel } from '../utils/version';
 
 export default function ProfileScreen({ navigation, route }: any) {
   const user = route.params?.user || { name: 'Oyuncu', id: '' };
@@ -355,6 +356,7 @@ export default function ProfileScreen({ navigation, route }: any) {
         <TouchableOpacity onPress={() => Linking.openURL('https://sportarea.onrender.com/gizlilik')} style={{ alignItems: 'center', marginTop: 18 }}>
           <Text style={{ color: '#64748B', fontSize: 13, textDecorationLine: 'underline' }}>Gizlilik Politikası</Text>
         </TouchableOpacity>
+        <Text style={{ color: '#64748B', fontSize: 12, textAlign: 'center', marginTop: 10 }}>{versionLabel()}</Text>
 
         <View style={{height: 50}} />
       </ScrollView>

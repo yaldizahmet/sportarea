@@ -18,6 +18,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { StatusBar } from 'expo-status-bar';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { API_URL } from '../config/api';
+import { versionLabel } from '../utils/version';
 import { captureInviteFromUrl, captureMatchFromUrl, getPendingInvite, previewInvite } from '../utils/invite';
 
 export default function AuthScreen({ navigation }: any) {
@@ -337,6 +338,7 @@ export default function AuthScreen({ navigation }: any) {
               </TouchableOpacity>
             )}
           </Animated.View>
+          <Text style={{ color: '#8193AA', fontSize: 12, textAlign: 'center', marginTop: 28 }}>{versionLabel()}</Text>
         </ScrollView>
       </KeyboardAvoidingView>
     </View>
