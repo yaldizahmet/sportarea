@@ -138,9 +138,13 @@ export default function MatchDetailsScreen({ route, navigation }: any) {
 
   // AI Team Suggestion Preview States
   const [suggestedTeamsModalVisible, setSuggestedTeamsModalVisible] = useState(false);
-  const [suggestedTeamA, setSuggestedTeamA] = useState<any[]>([]);
-  const [suggestedTeamB, setSuggestedTeamB] = useState<any[]>([]);
-  const [suggestedStats, setSuggestedStats] = useState<{teamA_overall: number, teamB_overall: number} | null>(null);
+  // Takım penceresi: A / B / takımsız listeleri elle düzenlenir (oyuncuya dokun -> diğer takıma geçer).
+  const [editA, setEditA] = useState<any[]>([]);
+  const [editB, setEditB] = useState<any[]>([]);
+  const [editNone, setEditNone] = useState<any[]>([]);
+  const [lastSuggestion, setLastSuggestion] = useState<{ teamA: any[]; teamB: any[] } | null>(null);
+  const [nameA, setNameA] = useState('A Takımı');
+  const [nameB, setNameB] = useState('B Takımı');
   const [saveTeamsLoading, setSaveTeamsLoading] = useState(false);
   const [groupCreatorId, setGroupCreatorId] = useState(matchInfo.groupCreatorId || null);
   // Takım kurma, maçı bitirme ve iptal: maçı kuran ya da grubun kurucusu (sunucudaki kuralın aynısı)
@@ -466,44 +470,99 @@ export default function MatchDetailsScreen({ route, navigation }: any) {
     }
   };
 
-  const handleDivideTeams = async () => {
+  // Takım penceresini aç: takımlar kuruluysa mevcut hâliyle, değilse dengeli öneriyle başlar.
+  const openTeams = async () => {
     try {
       const res = await apiFetch(`${API_URL}/matches/${matchInfo.id}/suggest-teams`);
       const data = await res.json();
-      if (res.ok) {
-        setSuggestedTeamA(data.teamA || []);
-        setSuggestedTeamB(data.teamB || []);
-        setSuggestedStats(data.stats || null);
-        setSuggestedTeamsModalVisible(true);
-      } else {
-        Alert.alert("Hata", data.error || "Öneri oluşturulamadı. Yeterli oyuncu var mı kontrol edin.");
+      if (!res.ok) {
+        Alert.alert('Takım kurulamadı', data.error || 'Takım kurmak için kadroda en az 2 kişi olmalı.');
+        return;
       }
+      const sugA: any[] = data.teamA || [];
+      const sugB: any[] = data.teamB || [];
+      setLastSuggestion({ teamA: sugA, teamB: sugB });
+      const overall = new Map<string, number>([...sugA, ...sugB].map((p: any) => [p.id, p.overall]));
+      const withOverall = (p: any) => ({ ...p, overall: overall.get(p.id) ?? 65 });
+      if (teamsDivided) {
+        setEditA(teamA.map(withOverall));
+        setEditB(teamB.map(withOverall));
+        setEditNone(unassigned.map(withOverall));
+      } else {
+        setEditA(sugA);
+        setEditB(sugB);
+        setEditNone([]);
+      }
+      setNameA(String(matchInfo.teamAName || 'A Takımı'));
+      setNameB(String(matchInfo.teamBName || 'B Takımı'));
+      setSuggestedTeamsModalVisible(true);
     } catch (e) {
-      Alert.alert("Hata", "Bağlantı sorunu yaşandı.");
+      Alert.alert('Hata', 'Bağlantı sorunu yaşandı.');
     }
   };
 
-  const handleApplySuggestedTeams = async () => {
+  // Oyuncuya dokununca diğer takıma geçer; takımsızsa daha az kişili takıma girer.
+  const movePlayer = (p: any) => {
+    const inA = editA.some((x) => x.id === p.id);
+    const inB = editB.some((x) => x.id === p.id);
+    const without = (list: any[]) => list.filter((x) => x.id !== p.id);
+    if (inA) { setEditA(without(editA)); setEditB([...editB, p]); }
+    else if (inB) { setEditB(without(editB)); setEditA([...editA, p]); }
+    else {
+      setEditNone(without(editNone));
+      if (editA.length <= editB.length) setEditA([...editA, p]); else setEditB([...editB, p]);
+    }
+  };
+
+  const applySuggestion = () => {
+    if (!lastSuggestion) return;
+    setEditA(lastSuggestion.teamA);
+    setEditB(lastSuggestion.teamB);
+    setEditNone([]);
+  };
+
+  // Rastgele karıştır: önce kaleciler iki takıma ayrılır, sonra kalanlar sırayla dağıtılır.
+  const shuffleTeams = () => {
+    const all = [...editA, ...editB, ...editNone];
+    for (let i = all.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [all[i], all[j]] = [all[j], all[i]];
+    }
+    const isGk = (p: any) => String(p.position || '').toLowerCase().includes('kaleci');
+    const ordered = [...all.filter(isGk), ...all.filter((p) => !isGk(p))];
+    const a: any[] = [];
+    const b: any[] = [];
+    ordered.forEach((p, i) => (i % 2 === 0 ? a : b).push(p));
+    setEditA(a);
+    setEditB(b);
+    setEditNone([]);
+  };
+
+  const teamPower = (list: any[]) =>
+    list.length ? Math.round(list.reduce((sum, p) => sum + (Number(p.overall) || 65), 0) / list.length) : 0;
+
+  const saveTeamsEdit = async () => {
     setSaveTeamsLoading(true);
     try {
       const res = await apiFetch(`${API_URL}/matches/${matchInfo.id}/save-teams`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          teamA: suggestedTeamA.map((p) => p.id),
-          teamB: suggestedTeamB.map((p) => p.id),
+          teamA: editA.map((p) => p.id),
+          teamB: editB.map((p) => p.id),
+          teamAName: nameA,
+          teamBName: nameB,
         }),
       });
       const data = await res.json();
       if (res.ok) {
         setSuggestedTeamsModalVisible(false);
-        fetchPlayers();
-        Alert.alert("Takımlar Kuruldu! ⚽", "Dengeli takımlar sahaya yerleştirildi ve başarıyla kaydedildi!");
+        await Promise.all([fetchPlayers(), fetchMatchInfo()]);
       } else {
-        Alert.alert("Hata", data.error || "Takımlar kaydedilemedi.");
+        Alert.alert('Hata', data.error || 'Takımlar kaydedilemedi.');
       }
     } catch (e) {
-      Alert.alert("Hata", "Bağlantı sorunu yaşandı.");
+      Alert.alert('Hata', 'Bağlantı sorunu yaşandı.');
     }
     setSaveTeamsLoading(false);
   };
@@ -539,6 +598,9 @@ export default function MatchDetailsScreen({ route, navigation }: any) {
   const teamB = activePlayers.filter((p: any) => p.team === 'B');
   const unassigned = activePlayers.filter((p: any) => p.team !== 'A' && p.team !== 'B');
   const teamsDivided = teamA.length > 0 || teamB.length > 0;
+  const myTeam = players.find((p: any) => p.id === user.id)?.team;
+  const myTeamLabel = teamsDivided && myTeam === 'A' ? `🔵 ${matchInfo.teamAName || 'A Takımı'}`
+    : teamsDivided && myTeam === 'B' ? `🔴 ${matchInfo.teamBName || 'B Takımı'}` : '';
 
   const pitchFee: number | null = matchInfo.pitchFee ?? null;
   const share = shareOf(pitchFee, activePlayers.length);
@@ -881,9 +943,9 @@ export default function MatchDetailsScreen({ route, navigation }: any) {
               ? `Oynayanlar (${activePlayers.length})`
               : `Kadro (${activePlayers.length}/${matchInfo.maxPlayers || 14})`}
           </Text>
-          {matchStatus === 'OPEN' && isManager && (
-            <TouchableOpacity onPress={handleDivideTeams} style={styles.divideButton}>
-              <Text style={styles.divideButtonText}>Takım Böl 🎲</Text>
+          {isManager && !isCancelled && activePlayers.length >= 2 && (
+            <TouchableOpacity onPress={openTeams} style={styles.divideButton}>
+              <Text style={styles.divideButtonText}>{teamsDivided ? 'Takımları düzenle' : 'Takım Böl 🎲'}</Text>
             </TouchableOpacity>
           )}
         </View>
@@ -923,6 +985,17 @@ export default function MatchDetailsScreen({ route, navigation }: any) {
           )}
         </View>
 
+        {!teamsDivided && !isCancelled && activePlayers.length >= 2 ? (
+          <View style={styles.teamsHint}>
+            <Ionicons name="people-outline" size={16} color="#94A3B8" />
+            <Text style={styles.teamsHintText}>
+              {isManager
+                ? 'Takımlar henüz belli değil. "Takım Böl"e bas; dengeli öneriyi istediğin gibi değiştirip kaydet.'
+                : 'Takımlar henüz belli değil. Yönetici böldüğünde burada iki takım olarak görünecek.'}
+            </Text>
+          </View>
+        ) : null}
+
         {!teamsDivided ? (
           <View style={styles.playersContainer}>
             {unassigned.length === 0 ? (
@@ -958,18 +1031,18 @@ export default function MatchDetailsScreen({ route, navigation }: any) {
         ) : (
           <View style={styles.teamsSplitContainer}>
             <LinearGradient colors={['rgba(33, 150, 243, 0.15)', 'rgba(33, 150, 243, 0.02)']} style={styles.teamContainer}>
-              <Text style={[styles.teamHeader, { color: '#2196F3' }]}>A TAKIMI ({teamA.length})</Text>
-              {teamA.map((player, idx) => renderPlayerCard(player, idx, "A Takımı", styles.teamABadge, styles.teamAText))}
+              <Text style={[styles.teamHeader, { color: '#2196F3' }]}>🔵 {String(matchInfo.teamAName || 'A Takımı').toLocaleUpperCase('tr-TR')} ({teamA.length})</Text>
+              {teamA.map((player, idx) => renderPlayerCard(player, idx, String(matchInfo.teamAName || 'A Takımı'), styles.teamABadge, styles.teamAText))}
             </LinearGradient>
 
             <LinearGradient colors={['rgba(244, 67, 54, 0.15)', 'rgba(244, 67, 54, 0.02)']} style={styles.teamContainer}>
-              <Text style={[styles.teamHeader, { color: '#F44336' }]}>B TAKIMI ({teamB.length})</Text>
-              {teamB.map((player, idx) => renderPlayerCard(player, idx, "B Takımı", styles.teamBBadge, styles.teamBText))}
+              <Text style={[styles.teamHeader, { color: '#F44336' }]}>🔴 {String(matchInfo.teamBName || 'B Takımı').toLocaleUpperCase('tr-TR')} ({teamB.length})</Text>
+              {teamB.map((player, idx) => renderPlayerCard(player, idx, String(matchInfo.teamBName || 'B Takımı'), styles.teamBBadge, styles.teamBText))}
             </LinearGradient>
             
             {unassigned.length > 0 ? (
               <View style={styles.teamContainer}>
-                <Text style={[styles.teamHeader, { color: '#A0A0A0' }]}>Atanmamış Oyuncular</Text>
+                <Text style={[styles.teamHeader, { color: '#A0A0A0' }]}>Takımı belli olmayanlar ({unassigned.length})</Text>
                 {unassigned.map((player: any, idx: number) => renderPlayerCard(player, idx, "ONAYLI", styles.statusApproved, styles.statusTextApproved))}
               </View>
             ) : null}
@@ -998,7 +1071,7 @@ export default function MatchDetailsScreen({ route, navigation }: any) {
       {phase === 'open' && (
         <View style={styles.footer}>
           <Text style={styles.answerPrompt}>
-            {myStatus === 'ACTIVE' ? 'Kadrodasın ✅'
+            {myStatus === 'ACTIVE' ? `Kadrodasın ✅${myTeamLabel ? ` · ${myTeamLabel}` : ''}`
               : myStatus === 'RESERVE' ? 'Yedek listesindesin, yer açılırsa kadroya geçersin'
               : myStatus === 'MAYBE' ? 'Belki dedin, kesinleşince güncelle'
               : myStatus === 'DECLINED' ? 'Bu maça gelmiyorsun'
@@ -1345,81 +1418,77 @@ export default function MatchDetailsScreen({ route, navigation }: any) {
          </View>
       </Modal>
 
-      {/* AI TEAM SUGGESTION MODAL WITH TACTICAL FIELD */}
-      <Modal visible={suggestedTeamsModalVisible} transparent animationType="slide">
+      {/* TAKIMLAR: dengeli öneri, elle düzenleme, takım adları */}
+      <Modal visible={suggestedTeamsModalVisible} transparent animationType="slide" onRequestClose={() => setSuggestedTeamsModalVisible(false)}>
         <View style={styles.modalOverlay}>
-          <View style={[styles.modalContent, { maxHeight: '90%', borderTopColor: '#00E676', borderTopWidth: 2 }]}>
-            <Text style={[styles.modalTitle, { color: '#00E676', fontSize: 18, marginBottom: 5 }]}>⚖️ Dengeli Takım Önerisi</Text>
-            <Text style={{ color: '#94A3B8', textAlign: 'center', fontSize: 12, marginBottom: 15 }}>
-              Oyuncuların puanları ve mevkileri dikkate alınarak iki takımın gücü eşitlendi.
-            </Text>
+          <View style={[styles.modalContent, { maxHeight: '92%' }]}>
+            <ScrollView showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
+              <Text style={styles.modalTitle}>Takımlar</Text>
 
-            {suggestedStats && (
-              <View style={styles.statsComparisonRow}>
-                <View style={[styles.teamStrengthBox, { borderColor: '#2196F3' }]}>
-                  <Text style={{ color: '#2196F3', fontSize: 12, fontWeight: 'bold' }}>A TAKIMI GÜCÜ</Text>
-                  <Text style={{ color: '#FFF', fontSize: 24, fontWeight: '900' }}>{suggestedStats.teamA_overall}</Text>
-                </View>
-                <Text style={{ color: '#64748B', fontWeight: 'bold', fontSize: 18 }}>VS</Text>
-                <View style={[styles.teamStrengthBox, { borderColor: '#F44336' }]}>
-                  <Text style={{ color: '#F44336', fontSize: 12, fontWeight: 'bold' }}>B TAKIMI GÜCÜ</Text>
-                  <Text style={{ color: '#FFF', fontSize: 24, fontWeight: '900' }}>{suggestedStats.teamB_overall}</Text>
-                </View>
+              <View style={{ flexDirection: 'row', gap: 10, marginBottom: 8 }}>
+                <TextInput style={[styles.teamNameInput, { borderColor: 'rgba(33,150,243,0.6)' }]} value={nameA} onChangeText={setNameA} maxLength={20} placeholder="A Takımı" placeholderTextColor="#64748B" />
+                <TextInput style={[styles.teamNameInput, { borderColor: 'rgba(244,67,54,0.6)' }]} value={nameB} onChangeText={setNameB} maxLength={20} placeholder="B Takımı" placeholderTextColor="#64748B" />
               </View>
-            )}
+              <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginBottom: 12 }}>
+                {[['Yelekliler', 'Yeleksizler'], ['Renkliler', 'Beyazlar'], ['A Takımı', 'B Takımı']].map(([a, b]) => (
+                  <TouchableOpacity key={a} onPress={() => { setNameA(a); setNameB(b); }} style={styles.namePreset}>
+                    <Text style={styles.namePresetText}>{a} / {b}</Text>
+                  </TouchableOpacity>
+                ))}
+              </ScrollView>
 
-            {/* Tactical Football Pitch View */}
-            <View style={styles.pitchContainer}>
-              {/* Pitch Line markings */}
-              <View style={styles.pitchCenterLine} />
-              <View style={styles.pitchCenterCircle} />
-              <View style={styles.pitchTopBox} />
-              <View style={styles.pitchBottomBox} />
+              <View style={{ flexDirection: 'row', gap: 10 }}>
+                {[{ list: editA, color: '#2196F3', name: nameA || 'A Takımı' }, { list: editB, color: '#F44336', name: nameB || 'B Takımı' }].map((col, ci) => (
+                  <View key={ci} style={[styles.teamCol, { borderColor: col.color + '66' }]}>
+                    <Text style={[styles.teamColTitle, { color: col.color }]} numberOfLines={1}>{col.name}</Text>
+                    <Text style={styles.teamColMeta}>{col.list.length} kişi · güç {teamPower(col.list)}</Text>
+                    {col.list.map((p) => (
+                      <TouchableOpacity key={p.id} onPress={() => movePlayer(p)} style={styles.teamChip} activeOpacity={0.7}>
+                        <Text style={styles.teamChipName} numberOfLines={1}>{displayName(p)}</Text>
+                        <Text style={styles.teamChipMeta}>
+                          {String(p.position || '').toLowerCase().includes('kaleci') ? '🧤 ' : ''}{p.overall ?? ''}
+                        </Text>
+                      </TouchableOpacity>
+                    ))}
+                  </View>
+                ))}
+              </View>
 
-              {/* Render Team A Suggested Players (Top Half) */}
-              {(() => {
-                const coords = getCoordinates(suggestedTeamA, true);
-                return suggestedTeamA.map((p) => {
-                  const pos = coords[p.id] || { x: 160, y: 100 };
-                  const firstName = p.nickname ? String(p.nickname) : p.name ? String(p.name).split(' ')[0] : 'Oyuncu';
-                  return (
-                    <View key={p.id} style={[styles.pitchPlayerMarker, { left: pos.x - 18, top: pos.y - 18, backgroundColor: '#2196F3' }]}>
-                      <Text style={styles.pitchPlayerText}>{p.overall}</Text>
-                      <View style={styles.pitchPlayerNameTag}>
-                        <Text style={styles.pitchPlayerNameText} numberOfLines={1}>{firstName}</Text>
-                      </View>
-                    </View>
-                  );
-                });
-              })()}
+              {editNone.length > 0 && (
+                <View style={{ marginTop: 12 }}>
+                  <Text style={styles.teamColMeta}>Takımsız ({editNone.length}) · dokun, bir takıma girsin</Text>
+                  <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 6 }}>
+                    {editNone.map((p) => (
+                      <TouchableOpacity key={p.id} onPress={() => movePlayer(p)} style={[styles.teamChip, { paddingHorizontal: 10 }]}>
+                        <Text style={styles.teamChipName}>{displayName(p)}</Text>
+                      </TouchableOpacity>
+                    ))}
+                  </View>
+                </View>
+              )}
 
-              {/* Render Team B Suggested Players (Bottom Half) */}
-              {(() => {
-                const coords = getCoordinates(suggestedTeamB, false);
-                return suggestedTeamB.map((p) => {
-                  const pos = coords[p.id] || { x: 160, y: 340 };
-                  const firstName = p.nickname ? String(p.nickname) : p.name ? String(p.name).split(' ')[0] : 'Oyuncu';
-                  return (
-                    <View key={p.id} style={[styles.pitchPlayerMarker, { left: pos.x - 18, top: pos.y - 18, backgroundColor: '#F44336' }]}>
-                      <Text style={styles.pitchPlayerText}>{p.overall}</Text>
-                      <View style={styles.pitchPlayerNameTag}>
-                        <Text style={styles.pitchPlayerNameText} numberOfLines={1}>{firstName}</Text>
-                      </View>
-                    </View>
-                  );
-                });
-              })()}
-            </View>
+              <Text style={{ color: '#64748B', fontSize: 12, textAlign: 'center', marginTop: 10 }}>
+                Oyuncuya dokun, diğer takıma geçsin. Güç: oyuncuların aldığı puanların ortalaması.
+              </Text>
 
-            <TouchableOpacity style={styles.saveBtn} onPress={handleApplySuggestedTeams} disabled={saveTeamsLoading}>
-               <LinearGradient colors={['#00C853', '#B2FF59']} start={{x: 0, y: 0}} end={{x: 1, y: 0}} style={styles.saveBtnGradient}>
-                 <Text style={styles.saveBtnText}>{saveTeamsLoading ? 'KAYDEDİLİYOR...' : 'TAKIMLARI SAHAYA SÜR (KAYDET) ⚽'}</Text>
-               </LinearGradient>
-            </TouchableOpacity>
+              <View style={{ flexDirection: 'row', gap: 10, marginTop: 12 }}>
+                <TouchableOpacity style={styles.teamToolBtn} onPress={applySuggestion}>
+                  <Text style={styles.teamToolText}>⚖️ Dengeli öner</Text>
+                </TouchableOpacity>
+                <TouchableOpacity style={styles.teamToolBtn} onPress={shuffleTeams}>
+                  <Text style={styles.teamToolText}>🎲 Karıştır</Text>
+                </TouchableOpacity>
+              </View>
 
-            <TouchableOpacity style={styles.cancelBtn} onPress={() => setSuggestedTeamsModalVisible(false)}>
-               <Text style={[styles.cancelBtnText, { color: '#94A3B8' }]}>Vazgeç</Text>
-            </TouchableOpacity>
+              <TouchableOpacity style={[styles.saveBtn, { marginTop: 14 }]} onPress={saveTeamsEdit} disabled={saveTeamsLoading}>
+                <LinearGradient colors={['#00C853', '#B2FF59']} start={{x: 0, y: 0}} end={{x: 1, y: 0}} style={styles.saveBtnGradient}>
+                  <Text style={styles.saveBtnText}>{saveTeamsLoading ? 'KAYDEDİLİYOR...' : 'TAKIMLARI KAYDET'}</Text>
+                </LinearGradient>
+              </TouchableOpacity>
+              <TouchableOpacity style={styles.cancelBtn} onPress={() => setSuggestedTeamsModalVisible(false)}>
+                <Text style={[styles.cancelBtnText, { color: '#94A3B8' }]}>Vazgeç</Text>
+              </TouchableOpacity>
+            </ScrollView>
           </View>
         </View>
       </Modal>
@@ -1461,6 +1530,19 @@ const styles = StyleSheet.create({
   divideButton: { backgroundColor: 'rgba(255, 193, 7, 0.2)', paddingHorizontal: 12, paddingVertical: 6, borderRadius: 8, borderWidth: 1, borderColor: 'rgba(255, 193, 7, 0.5)' },
   divideButtonText: { color: '#FFC107', fontWeight: 'bold', fontSize: 13 },
   teamsSplitContainer: { marginTop: 0 },
+  teamsHint: { flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: 'rgba(148,163,184,0.08)', borderRadius: 12, padding: 12, marginBottom: 12 },
+  teamsHintText: { color: '#94A3B8', fontSize: 13, flex: 1, lineHeight: 18 },
+  teamNameInput: { flex: 1, backgroundColor: 'rgba(0,0,0,0.25)', color: '#FFFFFF', borderRadius: 10, borderWidth: 1, paddingHorizontal: 12, paddingVertical: 10, fontSize: 15, fontWeight: '600', minWidth: 0 },
+  namePreset: { borderRadius: 999, borderWidth: 1, borderColor: 'rgba(255,255,255,0.12)', paddingHorizontal: 12, paddingVertical: 6, marginRight: 8 },
+  namePresetText: { color: '#CBD5E1', fontSize: 13 },
+  teamCol: { flex: 1, borderWidth: 1, borderRadius: 14, padding: 10, backgroundColor: 'rgba(255,255,255,0.02)', minWidth: 0 },
+  teamColTitle: { fontWeight: 'bold', fontSize: 15, textAlign: 'center' },
+  teamColMeta: { color: '#94A3B8', fontSize: 12, textAlign: 'center', marginBottom: 8, marginTop: 2 },
+  teamChip: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', backgroundColor: 'rgba(255,255,255,0.06)', borderRadius: 10, paddingHorizontal: 10, paddingVertical: 9, marginBottom: 6 },
+  teamChipName: { color: '#FFFFFF', fontSize: 14, fontWeight: '600', flexShrink: 1 },
+  teamChipMeta: { color: '#94A3B8', fontSize: 12, marginLeft: 6 },
+  teamToolBtn: { flex: 1, borderRadius: 12, borderWidth: 1, borderColor: 'rgba(255,255,255,0.15)', paddingVertical: 12, alignItems: 'center' },
+  teamToolText: { color: '#E2E8F0', fontWeight: '600', fontSize: 14 },
   teamContainer: { backgroundColor: "rgba(255, 255, 255, 0.02)", borderRadius: 20, padding: 15, borderWidth: 1, borderColor: "rgba(255, 255, 255, 0.05)", marginBottom: 15 },
   teamHeader: { fontSize: 16, fontWeight: 'bold', marginBottom: 15, textAlign: 'center' },
   teamABadge: { backgroundColor: 'rgba(33, 150, 243, 0.15)' },

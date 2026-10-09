@@ -1792,9 +1792,22 @@ app.post('/api/matches/:id/save-teams', async (req, res) => {
     if (!perm.exists) return res.status(404).json({ error: 'Maç bulunamadı.' });
     if (!perm.allowed) return res.status(403).json({ error: 'Takımları sadece maçı kuran kişi belirleyebilir.' });
 
-    await saveTeams(id, teamA.map(String), teamB.map(String));
+    const cur = await db.get('SELECT status FROM "Matches" WHERE id = ?', [id]);
+    if (cur?.status === 'CANCELLED') return res.status(400).json({ error: 'İptal edilmiş maçta takım kurulamaz.' });
 
-    res.json({ message: 'Takımlar başarıyla kaydedildi!' });
+    await saveTeams(id, teamA.map(String), teamB.map(String));
+    // Takım adları (isteğe bağlı): "Yelekliler / Yeleksizler" gibi. Boşsa varsayılan.
+    const cleanName = (v: any, def: string) => {
+      const t = String(v ?? '').trim().replace(/\s+/g, ' ').slice(0, 20);
+      return t || def;
+    };
+    if (req.body.teamAName !== undefined || req.body.teamBName !== undefined) {
+      await db.run('UPDATE "Matches" SET "teamAName" = ?, "teamBName" = ? WHERE id = ?', [
+        cleanName(req.body.teamAName, 'A Takımı'), cleanName(req.body.teamBName, 'B Takımı'), id,
+      ]);
+    }
+
+    res.json({ message: 'Takımlar kaydedildi!' });
   } catch (error) {
     res.status(500).json({ error: 'Takımları kaydetme hatası' });
   }
