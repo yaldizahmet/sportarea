@@ -20,9 +20,11 @@ import { LinearGradient } from "expo-linear-gradient";
 import { Ionicons } from "@expo/vector-icons";
 import { StatusBar } from "expo-status-bar";
 import { API_URL } from "../config/api";
+import AsyncStorage from "@react-native-async-storage/async-storage";
 import { matchLink } from "../utils/invite";
 import { formatMatchDate, formatClock, formatMoney, shareOf, DAY_NAMES_SHORT, displayName, realNameHint } from "../utils/format";
 import Avatar from "../components/Avatar";
+import PitchView from "../components/PitchView";
 
 const EDIT_HOURS = ['18:00', '19:00', '20:00', '21:00', '22:00', '23:00', '00:00'];
 const EDIT_LOCKOUTS = [0, 1, 3, 6, 12];
@@ -37,50 +39,6 @@ const upcomingDays = () => {
 const dayLabel = (d: Date, i: number) =>
   i === 0 ? 'Bugün' : i === 1 ? 'Yarın' : `${DAY_NAMES_SHORT[d.getDay()]} ${d.getDate()} ${MONTHS_SHORT[d.getMonth()]}`;
 
-const getCoordinates = (team: any[], isTeamA: boolean) => {
-  const width = 320;
-  const height = 440;
-  
-  // Group players by role
-  const gk = team.filter((p: any) => (p.position || '').toLowerCase().includes('kaleci'));
-  const def = team.filter((p: any) => (p.position || '').toLowerCase().includes('defans') || (p.position || '').toLowerCase().includes('stoper') || (p.position || '').toLowerCase().includes('bek'));
-  const fwd = team.filter((p: any) => (p.position || '').toLowerCase().includes('forvet') || (p.position || '').toLowerCase().includes('santrafor') || (p.position || '').toLowerCase().includes('kanat'));
-  // Anyone else is mid
-  const mid = team.filter((p: any) => !gk.includes(p) && !def.includes(p) && !fwd.includes(p));
-
-  const coords: { [id: string]: { x: number, y: number } } = {};
-
-  const assignCoordsForRole = (playersList: any[], yVal: number) => {
-    const count = playersList.length;
-    playersList.forEach((p, idx) => {
-      let xVal = 160; // Center default
-      if (count === 2) {
-        xVal = idx === 0 ? 80 : 240;
-      } else if (count === 3) {
-        xVal = idx === 0 ? 70 : (idx === 1 ? 160 : 250);
-      } else if (count > 3) {
-        // Space them evenly
-        const step = (width - 60) / (count - 1);
-        xVal = 30 + idx * step;
-      }
-      coords[p.id] = { x: xVal, y: yVal };
-    });
-  };
-
-  if (isTeamA) {
-    assignCoordsForRole(gk, 35);
-    assignCoordsForRole(def, 95);
-    assignCoordsForRole(mid, 150);
-    assignCoordsForRole(fwd, 195);
-  } else {
-    assignCoordsForRole(gk, 405);
-    assignCoordsForRole(def, 345);
-    assignCoordsForRole(mid, 290);
-    assignCoordsForRole(fwd, 245);
-  }
-
-  return coords;
-};
 
 // Puanlama seviyeleri (sunucuya 1-99 arası sayı olarak gider; rozet eşikleri 78 ve 82)
 const RATING_LEVELS = [
@@ -139,6 +97,15 @@ export default function MatchDetailsScreen({ route, navigation }: any) {
   // AI Team Suggestion Preview States
   const [suggestedTeamsModalVisible, setSuggestedTeamsModalVisible] = useState(false);
   // Takım penceresi: A / B / takımsız listeleri elle düzenlenir (oyuncuya dokun -> diğer takıma geçer).
+  // Takımların görünümü: liste ya da saha şeması (seçim telefonda hatırlanır)
+  const [teamView, setTeamView] = useState<'list' | 'pitch'>('list');
+  useEffect(() => {
+    AsyncStorage.getItem('teamView').then((v) => { if (v === 'pitch' || v === 'list') setTeamView(v); }).catch(() => {});
+  }, []);
+  const chooseTeamView = (v: 'list' | 'pitch') => {
+    setTeamView(v);
+    AsyncStorage.setItem('teamView', v).catch(() => {});
+  };
   const [editA, setEditA] = useState<any[]>([]);
   const [editB, setEditB] = useState<any[]>([]);
   const [editNone, setEditNone] = useState<any[]>([]);
@@ -1030,6 +997,26 @@ export default function MatchDetailsScreen({ route, navigation }: any) {
           </View>
         ) : (
           <View style={styles.teamsSplitContainer}>
+            <View style={styles.viewToggle}>
+              {([['list', 'list-outline', 'Liste'], ['pitch', 'football-outline', 'Saha']] as const).map(([key, icon, label]) => (
+                <TouchableOpacity key={key} onPress={() => chooseTeamView(key)} style={[styles.viewToggleBtn, teamView === key && styles.viewToggleOn]} accessibilityLabel={`Takımları ${label.toLowerCase()} olarak göster`}>
+                  <Ionicons name={icon as any} size={16} color={teamView === key ? '#0F172A' : '#94A3B8'} />
+                  <Text style={[styles.viewToggleText, teamView === key && { color: '#0F172A' }]}>{label}</Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+
+            {teamView === 'pitch' ? (
+              <PitchView
+                teamA={teamA}
+                teamB={teamB}
+                nameA={String(matchInfo.teamAName || 'A Takımı')}
+                nameB={String(matchInfo.teamBName || 'B Takımı')}
+                meId={user.id}
+                onPressPlayer={iPlayed ? (p: any) => { if (p.id !== user.id) openRatingModal(p); } : undefined}
+              />
+            ) : (
+            <>
             <LinearGradient colors={['rgba(33, 150, 243, 0.15)', 'rgba(33, 150, 243, 0.02)']} style={styles.teamContainer}>
               <Text style={[styles.teamHeader, { color: '#2196F3' }]}>🔵 {String(matchInfo.teamAName || 'A Takımı').toLocaleUpperCase('tr-TR')} ({teamA.length})</Text>
               {teamA.map((player, idx) => renderPlayerCard(player, idx, String(matchInfo.teamAName || 'A Takımı'), styles.teamABadge, styles.teamAText))}
@@ -1039,6 +1026,8 @@ export default function MatchDetailsScreen({ route, navigation }: any) {
               <Text style={[styles.teamHeader, { color: '#F44336' }]}>🔴 {String(matchInfo.teamBName || 'B Takımı').toLocaleUpperCase('tr-TR')} ({teamB.length})</Text>
               {teamB.map((player, idx) => renderPlayerCard(player, idx, String(matchInfo.teamBName || 'B Takımı'), styles.teamBBadge, styles.teamBText))}
             </LinearGradient>
+            </>
+            )}
             
             {unassigned.length > 0 ? (
               <View style={styles.teamContainer}>
@@ -1530,6 +1519,10 @@ const styles = StyleSheet.create({
   divideButton: { backgroundColor: 'rgba(255, 193, 7, 0.2)', paddingHorizontal: 12, paddingVertical: 6, borderRadius: 8, borderWidth: 1, borderColor: 'rgba(255, 193, 7, 0.5)' },
   divideButtonText: { color: '#FFC107', fontWeight: 'bold', fontSize: 13 },
   teamsSplitContainer: { marginTop: 0 },
+  viewToggle: { flexDirection: 'row', alignSelf: 'center', backgroundColor: 'rgba(255,255,255,0.06)', borderRadius: 12, padding: 4, marginBottom: 14 },
+  viewToggleBtn: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 18, paddingVertical: 8, borderRadius: 9 },
+  viewToggleOn: { backgroundColor: '#00E676' },
+  viewToggleText: { color: '#94A3B8', fontWeight: '600', fontSize: 14 },
   teamsHint: { flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: 'rgba(148,163,184,0.08)', borderRadius: 12, padding: 12, marginBottom: 12 },
   teamsHintText: { color: '#94A3B8', fontSize: 13, flex: 1, lineHeight: 18 },
   teamNameInput: { flex: 1, backgroundColor: 'rgba(0,0,0,0.25)', color: '#FFFFFF', borderRadius: 10, borderWidth: 1, paddingHorizontal: 12, paddingVertical: 10, fontSize: 15, fontWeight: '600', minWidth: 0 },
@@ -1630,91 +1623,5 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     backgroundColor: 'rgba(255,255,255,0.03)',
     marginHorizontal: 10
-  },
-  pitchContainer: {
-    width: 320,
-    height: 440,
-    backgroundColor: '#1B5E20',
-    borderRadius: 16,
-    borderWidth: 2,
-    borderColor: '#FFFFFF',
-    position: 'relative',
-    overflow: 'hidden',
-    alignSelf: 'center',
-    marginVertical: 10,
-  },
-  pitchCenterLine: {
-    position: 'absolute',
-    top: 220,
-    left: 0,
-    right: 0,
-    height: 2,
-    backgroundColor: 'rgba(255, 255, 255, 0.5)',
-  },
-  pitchCenterCircle: {
-    position: 'absolute',
-    top: 180,
-    left: 120,
-    width: 80,
-    height: 80,
-    borderRadius: 40,
-    borderWidth: 2,
-    borderColor: 'rgba(255, 255, 255, 0.5)',
-  },
-  pitchTopBox: {
-    position: 'absolute',
-    top: 0,
-    left: 60,
-    width: 200,
-    height: 65,
-    borderWidth: 2,
-    borderColor: 'rgba(255, 255, 255, 0.5)',
-    borderTopWidth: 0,
-  },
-  pitchBottomBox: {
-    position: 'absolute',
-    bottom: 0,
-    left: 60,
-    width: 200,
-    height: 65,
-    borderWidth: 2,
-    borderColor: 'rgba(255, 255, 255, 0.5)',
-    borderBottomWidth: 0,
-  },
-  pitchPlayerMarker: {
-    position: 'absolute',
-    width: 36,
-    height: 36,
-    borderRadius: 18,
-    justifyContent: 'center',
-    alignItems: 'center',
-    borderWidth: 2,
-    borderColor: '#FFFFFF',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.3,
-    shadowRadius: 3,
-    elevation: 4,
-  },
-  pitchPlayerText: {
-    color: '#FFFFFF',
-    fontSize: 12,
-    fontWeight: 'bold',
-  },
-  pitchPlayerNameTag: {
-    position: 'absolute',
-    bottom: -16,
-    backgroundColor: 'rgba(15, 23, 42, 0.85)',
-    paddingHorizontal: 5,
-    paddingVertical: 1,
-    borderRadius: 4,
-    borderWidth: 0.5,
-    borderColor: 'rgba(255, 255, 255, 0.2)',
-    maxWidth: 70,
-  },
-  pitchPlayerNameText: {
-    color: '#F8FAFC',
-    fontSize: 8,
-    fontWeight: 'bold',
   },
 });
