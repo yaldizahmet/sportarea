@@ -223,3 +223,8 @@ alter table sportarea."GroupMembers" add column "isAdmin" boolean not null defau
 -- v10: Maça özel saha dizilimi. Diziliş kaleci hariç ("2-2-1"); slot 0 = kaleci, sonra defanstan forvete.
 alter table sportarea."Matches" add column "teamAFormation" text, add column "teamBFormation" text;
 alter table sportarea."MatchPlayers" add column slot integer;
+
+-- v11: Takım kaptanları. Dizilişi o takımın kaptanı ayarlar (kaptan yoksa maçı yöneten).
+alter table sportarea."Matches"
+  add column "captainA" text references sportarea."User"(id) on delete set null,
+  add column "captainB" text references sportarea."User"(id) on delete set null;

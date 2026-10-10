@@ -114,6 +114,8 @@ export default function MatchDetailsScreen({ route, navigation }: any) {
   const [editNone, setEditNone] = useState<any[]>([]);
   const [lastSuggestion, setLastSuggestion] = useState<{ teamA: any[]; teamB: any[] } | null>(null);
   const [nameA, setNameA] = useState('A Takımı');
+  const [editCapA, setEditCapA] = useState<string | null>(null);
+  const [editCapB, setEditCapB] = useState<string | null>(null);
   const [nameB, setNameB] = useState('B Takımı');
   const [saveTeamsLoading, setSaveTeamsLoading] = useState(false);
   const [groupCreatorId, setGroupCreatorId] = useState(matchInfo.groupCreatorId || null);
@@ -402,7 +404,7 @@ export default function MatchDetailsScreen({ route, navigation }: any) {
   const buildRosterText = () => {
     const nameOf = (p: any) => p.isGuest
       ? `${p.name} (misafir${p.invitedByName ? ` · ${displayName({ name: p.invitedByName, nickname: p.invitedByNickname })}` : ''})`
-      : displayName(p);
+      : displayName(p) + (p.id === matchInfo.captainA || p.id === matchInfo.captainB ? ' (K)' : '');
     const max = Number(matchInfo.maxPlayers) || activePlayers.length;
     const lines: string[] = [];
     lines.push(`⚽ ${matchInfo.groupName ? `${matchInfo.groupName} · ` : ''}${formatMatchDate({ ...matchInfo, matchTimestamp })}`);
@@ -492,6 +494,8 @@ export default function MatchDetailsScreen({ route, navigation }: any) {
       }
       setNameA(String(matchInfo.teamAName || 'A Takımı'));
       setNameB(String(matchInfo.teamBName || 'B Takımı'));
+      setEditCapA(teamsDivided ? (matchInfo.captainA ?? null) : null);
+      setEditCapB(teamsDivided ? (matchInfo.captainB ?? null) : null);
       setSuggestedTeamsModalVisible(true);
     } catch (e) {
       Alert.alert('Hata', 'Bağlantı sorunu yaşandı.');
@@ -503,6 +507,9 @@ export default function MatchDetailsScreen({ route, navigation }: any) {
     const inA = editA.some((x) => x.id === p.id);
     const inB = editB.some((x) => x.id === p.id);
     const without = (list: any[]) => list.filter((x) => x.id !== p.id);
+    // Takım değiştiren kaptan, kaptanlığını bırakır.
+    if (p.id === editCapA) setEditCapA(null);
+    if (p.id === editCapB) setEditCapB(null);
     if (inA) { setEditA(without(editA)); setEditB([...editB, p]); }
     else if (inB) { setEditB(without(editB)); setEditA([...editA, p]); }
     else {
@@ -513,6 +520,8 @@ export default function MatchDetailsScreen({ route, navigation }: any) {
 
   const applySuggestion = () => {
     if (!lastSuggestion) return;
+    setEditCapA(null);
+    setEditCapB(null);
     setEditA(lastSuggestion.teamA);
     setEditB(lastSuggestion.teamB);
     setEditNone([]);
@@ -533,6 +542,8 @@ export default function MatchDetailsScreen({ route, navigation }: any) {
     setEditA(a);
     setEditB(b);
     setEditNone([]);
+    setEditCapA(null);
+    setEditCapB(null);
   };
 
   const teamPower = (list: any[]) =>
@@ -549,6 +560,8 @@ export default function MatchDetailsScreen({ route, navigation }: any) {
           teamB: editB.map((p) => p.id),
           teamAName: nameA,
           teamBName: nameB,
+          captainA: editCapA,
+          captainB: editCapB,
         }),
       });
       const data = await res.json();
@@ -605,20 +618,31 @@ export default function MatchDetailsScreen({ route, navigation }: any) {
   const matchRoleOf = (id: string) => lineA.roleOf.get(id) ?? lineB.roleOf.get(id);
   const bySlot = (line: ReturnType<typeof computeLineup>) => (x: any, y: any) =>
     (line.slotOf.get(x.id) ?? 99) - (line.slotOf.get(y.id) ?? 99);
-  const lineupEditable = isManager && !isCompleted && !isCancelled;
+  // Kaptanlar: takımda olan kaptan geçerli. Diziliş kaptanda; takımın kaptanı yoksa yöneticide.
+  const capA: string | null = matchInfo.captainA && teamA.some((p: any) => p.id === matchInfo.captainA) ? matchInfo.captainA : null;
+  const capB: string | null = matchInfo.captainB && teamB.some((p: any) => p.id === matchInfo.captainB) ? matchInfo.captainB : null;
+  const lineupOpen = !isCompleted && !isCancelled;
+  const editableA = lineupOpen && (capA ? capA === user.id : isManager);
+  const editableB = lineupOpen && (capB ? capB === user.id : isManager);
+  const captainName = (id: string | null) => {
+    const p = id ? players.find((x: any) => x.id === id) : null;
+    return p ? displayName(p) : '';
+  };
+  const lineupViewerHint = !lineupOpen ? ''
+    : (capA || capB)
+      ? `Dizilişi kaptanlar ayarlıyor: ${capA ? `🔵 ${captainName(capA)}` : '🔵 yönetici'} · ${capB ? `🔴 ${captainName(capB)}` : '🔴 yönetici'}`
+      : (isManager ? 'İpucu: "Takımları düzenle"den her takıma bir kaptan seçersen dizilişi kaptanlar ayarlar.' : 'Dizilişi yönetici ayarlıyor.');
 
   const saveLineup = async (c: { team: 'A' | 'B'; formation: string; slots: { userId: string; slot: number }[] }) => {
-    const fA = c.team === 'A' ? c.formation : (lineA.formation || null);
-    const fB = c.team === 'B' ? c.formation : (lineB.formation || null);
     // Hemen ekrana yansıt, sonra kaydet.
     const slotMap = new Map(c.slots.map((x) => [x.userId, x.slot]));
     setPlayers((prev) => prev.map((p: any) => (slotMap.has(p.id) ? { ...p, slot: slotMap.get(p.id) } : p)));
-    setMatchInfo((prev: any) => ({ ...prev, teamAFormation: fA, teamBFormation: fB }));
+    setMatchInfo((prev: any) => ({ ...prev, [c.team === 'A' ? 'teamAFormation' : 'teamBFormation']: c.formation || null }));
     try {
       const res = await apiFetch(`${API_URL}/matches/${matchInfo.id}/lineup`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ formationA: fA || null, formationB: fB || null, slots: c.slots }),
+        body: JSON.stringify({ team: c.team, formation: c.formation || null, slots: c.slots }),
       });
       if (!res.ok) {
         const d = await res.json().catch(() => ({}));
@@ -631,8 +655,9 @@ export default function MatchDetailsScreen({ route, navigation }: any) {
     }
   };
   const myTeam = players.find((p: any) => p.id === user.id)?.team;
-  const myTeamLabel = teamsDivided && myTeam === 'A' ? `🔵 ${matchInfo.teamAName || 'A Takımı'}`
-    : teamsDivided && myTeam === 'B' ? `🔴 ${matchInfo.teamBName || 'B Takımı'}` : '';
+  const iAmCaptain = (myTeam === 'A' && matchInfo.captainA === user.id) || (myTeam === 'B' && matchInfo.captainB === user.id);
+  const myTeamLabel = (teamsDivided && myTeam === 'A' ? `🔵 ${matchInfo.teamAName || 'A Takımı'}`
+    : teamsDivided && myTeam === 'B' ? `🔴 ${matchInfo.teamBName || 'B Takımı'}` : '') + (teamsDivided && iAmCaptain ? ' · Kaptansın' : '');
 
   const pitchFee: number | null = matchInfo.pitchFee ?? null;
   const share = shareOf(pitchFee, activePlayers.length);
@@ -773,12 +798,14 @@ export default function MatchDetailsScreen({ route, navigation }: any) {
             <Text style={styles.playerName} numberOfLines={1}>{displayName(player)}</Text>
             {player.isGuest ? (
               <Text style={styles.guestLine} numberOfLines={1}>
+                {teamsDivided && (player.id === capA || player.id === capB) ? 'Ⓚ Kaptan · ' : ''}
                 {teamsDivided && player.status === 'ACTIVE' && matchRoleOf(player.id) ? `${ROLE_LABEL[matchRoleOf(player.id)!]} · ` : ''}
                 Misafir{player.invitedByName ? ` · ${player.invitedBy === user.id ? 'senin' : `${displayName({ name: player.invitedByName, nickname: player.invitedByNickname })} getirdi`}` : ''}
               </Text>
             ) : (
               <Text style={styles.playerPosition} numberOfLines={1}>
                 {realNameHint(player) ? `${realNameHint(player)} · ` : ''}
+                {teamsDivided && (player.id === capA || player.id === capB) ? 'Ⓚ Kaptan · ' : ''}
                 {teamsDivided && player.status === 'ACTIVE' && matchRoleOf(player.id)
                   ? ROLE_LABEL[matchRoleOf(player.id)!]
                   : String(player.position || "Orta Saha")}
@@ -1108,7 +1135,10 @@ export default function MatchDetailsScreen({ route, navigation }: any) {
                 nameB={String(matchInfo.teamBName || 'B Takımı')}
                 formationA={matchInfo.teamAFormation}
                 formationB={matchInfo.teamBFormation}
-                editable={lineupEditable}
+                editableA={editableA}
+                editableB={editableB}
+                captainIds={[capA, capB].filter(Boolean) as string[]}
+                viewerHint={lineupViewerHint}
                 onLineupChange={saveLineup}
                 onDragActive={setScrollLocked}
                 meId={user.id}
@@ -1530,17 +1560,29 @@ export default function MatchDetailsScreen({ route, navigation }: any) {
               </ScrollView>
 
               <View style={{ flexDirection: 'row', gap: 10 }}>
-                {[{ list: editA, color: '#2196F3', name: nameA || 'A Takımı' }, { list: editB, color: '#F44336', name: nameB || 'B Takımı' }].map((col, ci) => (
+                {[{ list: editA, color: '#2196F3', name: nameA || 'A Takımı', cap: editCapA, setCap: setEditCapA }, { list: editB, color: '#F44336', name: nameB || 'B Takımı', cap: editCapB, setCap: setEditCapB }].map((col, ci) => (
                   <View key={ci} style={[styles.teamCol, { borderColor: col.color + '66' }]}>
                     <Text style={[styles.teamColTitle, { color: col.color }]} numberOfLines={1}>{col.name}</Text>
                     <Text style={styles.teamColMeta}>{col.list.length} kişi · güç {teamPower(col.list)}</Text>
                     {col.list.map((p) => (
-                      <TouchableOpacity key={p.id} onPress={() => movePlayer(p)} style={styles.teamChip} activeOpacity={0.7}>
-                        <Text style={styles.teamChipName} numberOfLines={1}>{displayName(p)}</Text>
-                        <Text style={styles.teamChipMeta}>
-                          {String(p.position || '').toLowerCase().includes('kaleci') ? '🧤 ' : ''}{p.overall ?? ''}
-                        </Text>
-                      </TouchableOpacity>
+                      <View key={p.id} style={[styles.teamChip, col.cap === p.id && { borderWidth: 1, borderColor: '#FACC15' }]}>
+                        <TouchableOpacity onPress={() => movePlayer(p)} activeOpacity={0.7} style={{ flex: 1, flexDirection: 'row', alignItems: 'center', minWidth: 0 }}>
+                          <Text style={styles.teamChipName} numberOfLines={1}>{displayName(p)}</Text>
+                          <Text style={styles.teamChipMeta}>
+                            {String(p.position || '').toLowerCase().includes('kaleci') ? '🧤 ' : ''}{p.overall ?? ''}
+                          </Text>
+                        </TouchableOpacity>
+                        {!p.isGuest ? (
+                          <TouchableOpacity
+                            onPress={() => col.setCap(col.cap === p.id ? null : p.id)}
+                            style={[styles.capToggle, col.cap === p.id && styles.capToggleOn]}
+                            hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
+                            accessibilityLabel={`${displayName(p)} kaptan`}
+                          >
+                            <Text style={[styles.capToggleText, col.cap === p.id && { color: '#0F172A' }]}>K</Text>
+                          </TouchableOpacity>
+                        ) : null}
+                      </View>
                     ))}
                   </View>
                 ))}
@@ -1560,7 +1602,7 @@ export default function MatchDetailsScreen({ route, navigation }: any) {
               )}
 
               <Text style={{ color: '#64748B', fontSize: 12, textAlign: 'center', marginTop: 10 }}>
-                Oyuncuya dokun, diğer takıma geçsin. Güç: oyuncuların aldığı puanların ortalaması.
+                Oyuncuya dokun, diğer takıma geçsin. K: takım kaptanı (dizilişi o ayarlar). Güç: oyuncuların aldığı puanların ortalaması.
               </Text>
 
               <View style={{ flexDirection: 'row', gap: 10, marginTop: 12 }}>
@@ -1637,6 +1679,9 @@ const styles = StyleSheet.create({
   teamChip: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', backgroundColor: 'rgba(255,255,255,0.06)', borderRadius: 10, paddingHorizontal: 10, paddingVertical: 9, marginBottom: 6 },
   teamChipName: { color: '#FFFFFF', fontSize: 14, fontWeight: '600', flexShrink: 1 },
   teamChipMeta: { color: '#94A3B8', fontSize: 12, marginLeft: 6 },
+  capToggle: { width: 22, height: 22, borderRadius: 11, borderWidth: 1, borderColor: 'rgba(250,204,21,0.6)', alignItems: 'center', justifyContent: 'center', marginLeft: 6 },
+  capToggleOn: { backgroundColor: '#FACC15', borderColor: '#FACC15' },
+  capToggleText: { color: '#FACC15', fontSize: 11, fontWeight: '900' },
   teamToolBtn: { flex: 1, borderRadius: 12, borderWidth: 1, borderColor: 'rgba(255,255,255,0.15)', paddingVertical: 12, alignItems: 'center' },
   teamToolText: { color: '#E2E8F0', fontWeight: '600', fontSize: 14 },
   teamContainer: { backgroundColor: "rgba(255, 255, 255, 0.02)", borderRadius: 20, padding: 15, borderWidth: 1, borderColor: "rgba(255, 255, 255, 0.05)", marginBottom: 15 },

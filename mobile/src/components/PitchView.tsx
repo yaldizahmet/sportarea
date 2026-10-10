@@ -5,10 +5,11 @@ import { displayName } from '../utils/format';
 import { computeLineup, formationOptions } from '../utils/lineup';
 
 // Takımları saha şeması üzerinde gösterir. Üst yarı A takımı (kalesi yukarıda), alt yarı B takımı.
-// Oyuncular maça özel dizilime göre yerleşir (utils/lineup). Yönetici maç öncesi:
-//  - takım başına diziliş seçer (2-2-1 gibi),
-//  - bir oyuncuyu sürükleyip aynı takımdan birinin üstüne bırakarak yerlerini değiştirir
-//    (ya da önce birine, sonra diğerine dokunur).
+// Oyuncular maça özel dizilime göre yerleşir (utils/lineup). Takımın kaptanı (kaptan yoksa yönetici)
+// maç öncesi sadece kendi takımı için:
+//  - diziliş seçer (2-2-1 gibi),
+//  - bir oyuncuyu sürükleyip takım arkadaşının üstüne bırakarak yerlerini değiştirir
+//    (ya da önce birine, sonra diğerine dokunur). Diğer herkes sadece görüntüler.
 
 const W = 320;
 const H = 500;
@@ -36,14 +37,19 @@ type Props = {
   formationA?: string | null;
   formationB?: string | null;
   meId?: string;
-  editable?: boolean;
+  editableA?: boolean;
+  editableB?: boolean;
+  captainIds?: string[];
+  viewerHint?: string;
   onPressPlayer?: (p: any) => void;
   onLineupChange?: (c: LineupChange) => void;
   onDragActive?: (active: boolean) => void;
 };
 
 export default function PitchView(props: Props) {
-  const { teamA, teamB, nameA, nameB, formationA, formationB, meId, editable, onPressPlayer, onLineupChange, onDragActive } = props;
+  const { teamA, teamB, nameA, nameB, formationA, formationB, meId, editableA, editableB, captainIds, viewerHint, onPressPlayer, onLineupChange, onDragActive } = props;
+  const canEdit = (team: Team) => Boolean(team === 'A' ? editableA : editableB);
+  const anyEditable = canEdit('A') || canEdit('B');
   const [selected, setSelected] = useState<string | null>(null);
 
   const lineA = useMemo(() => computeLineup(teamA, formationA), [teamA, formationA]);
@@ -92,7 +98,7 @@ export default function PitchView(props: Props) {
   };
 
   const tap = (m: { p: any; team: Team }) => {
-    if (!editable) {
+    if (!canEdit(m.team)) {
       onPressPlayer?.(m.p);
       return;
     }
@@ -105,11 +111,11 @@ export default function PitchView(props: Props) {
 
   return (
     <View style={styles.wrap}>
-      {editable && (
+      {anyEditable ? (
         <View style={styles.formBox}>
           {([['A', teamA, lineA, nameA, '#60A5FA'], ['B', teamB, lineB, nameB, '#F87171']] as const).map(([team, list, line, name, color]) => {
             const opts = formationOptions(list.length);
-            if (opts.length < 2) return null;
+            if (!canEdit(team) || opts.length < 2) return null;
             return (
               <View key={team} style={styles.formRow}>
                 <Text style={[styles.formLabel, { color }]} numberOfLines={1}>{name}</Text>
@@ -126,8 +132,11 @@ export default function PitchView(props: Props) {
           <Text style={styles.editHint}>
             Yer değiştirmek için oyuncuyu sürükleyip takım arkadaşının üstüne bırak ya da sırayla ikisine dokun. Diziliş kaleci hariçtir.
           </Text>
+          {viewerHint ? <Text style={styles.editHint}>{viewerHint}</Text> : null}
         </View>
-      )}
+      ) : viewerHint ? (
+        <Text style={[styles.editHint, { width: W, marginBottom: 8 }]}>{viewerHint}</Text>
+      ) : null}
 
       <View style={styles.legend}>
         <Text style={[styles.legendText, { color: '#93C5FD' }]} numberOfLines={1}>
@@ -158,8 +167,9 @@ export default function PitchView(props: Props) {
             color={m.team === 'A' ? '#2196F3' : '#F44336'}
             me={m.p.id === meId}
             selected={selected === m.p.id}
-            editable={Boolean(editable)}
-            tappable={Boolean(editable || onPressPlayer)}
+            captain={Boolean(captainIds?.includes(m.p.id))}
+            editable={canEdit(m.team)}
+            tappable={Boolean(canEdit(m.team) || onPressPlayer)}
             onTap={tap}
             onDrop={dropAt}
             onDragActive={onDragActive}
@@ -175,6 +185,7 @@ type MarkerProps = {
   color: string;
   me: boolean;
   selected: boolean;
+  captain: boolean;
   editable: boolean;
   tappable: boolean;
   onTap: (m: any) => void;
@@ -182,7 +193,7 @@ type MarkerProps = {
   onDragActive?: (active: boolean) => void;
 };
 
-function Marker({ m, color, me, selected, editable, tappable, onTap, onDrop, onDragActive }: MarkerProps) {
+function Marker({ m, color, me, selected, captain, editable, tappable, onTap, onDrop, onDragActive }: MarkerProps) {
   const pan = useRef(new Animated.ValueXY()).current;
   const [dragging, setDragging] = useState(false);
   // PanResponder bir kez oluşur; güncel değerleri ref'ten okur.
@@ -234,6 +245,9 @@ function Marker({ m, color, me, selected, editable, tappable, onTap, onDrop, onD
       <View style={[styles.ring, { borderColor: ringColor, backgroundColor: color }, (selected || dragging) && { transform: [{ scale: 1.15 }] }]}>
         <Avatar user={m.p} size={MARKER - 4} initialColor="#FFFFFF" />
       </View>
+      {captain ? (
+        <View style={styles.capBadge}><Text style={styles.capText}>K</Text></View>
+      ) : null}
       <View style={[styles.nameTag, me && { backgroundColor: '#FACC15' }]}>
         <Text style={[styles.nameText, me && { color: '#0F172A' }]} numberOfLines={1}>
           {me ? 'Sen' : displayName(m.p)}
@@ -266,6 +280,8 @@ const styles = StyleSheet.create({
   legendText: { flex: 1, fontSize: 12, fontWeight: 'bold' },
   marker: { position: 'absolute', width: 80, alignItems: 'center' },
   ring: { width: MARKER, height: MARKER, borderRadius: MARKER / 2, borderWidth: 2, alignItems: 'center', justifyContent: 'center', overflow: 'hidden' },
+  capBadge: { position: 'absolute', top: -4, left: 46, width: 16, height: 16, borderRadius: 8, backgroundColor: '#FACC15', alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: '#0F172A' },
+  capText: { color: '#0F172A', fontSize: 10, fontWeight: '900' },
   nameTag: { marginTop: 2, backgroundColor: 'rgba(15, 23, 42, 0.85)', borderRadius: 6, paddingHorizontal: 5, paddingVertical: 1, maxWidth: 78 },
   nameText: { color: '#F8FAFC', fontSize: 10, fontWeight: 'bold' },
 });

@@ -1827,7 +1827,24 @@ app.post('/api/matches/:id/save-teams', async (req, res) => {
     const cur = await db.get('SELECT status FROM "Matches" WHERE id = ?', [id]);
     if (cur?.status === 'CANCELLED') return res.status(400).json({ error: 'İptal edilmiş maçta takım kurulamaz.' });
 
-    await saveTeams(id, teamA.map(String), teamB.map(String));
+    const listA = teamA.map(String);
+    const listB = teamB.map(String);
+    const before = await db.get('SELECT "captainA", "captainB", location, "matchTimestamp", "teamAName", "teamBName" FROM "Matches" WHERE id = ?', [id]);
+    await saveTeams(id, listA, listB);
+
+    // Kaptanlar: gönderildiyse o (takımında olmalı), gönderilmediyse eskisi hâlâ o takımdaysa korunur.
+    const pickCaptain = (sent: any, old: string | null, list: string[]) => {
+      if (sent !== undefined) return sent && list.includes(String(sent)) ? String(sent) : null;
+      return old && list.includes(old) ? old : null;
+    };
+    let capA = pickCaptain(req.body.captainA, before?.captainA ?? null, listA);
+    let capB = pickCaptain(req.body.captainB, before?.captainB ?? null, listB);
+    // Misafir kaptan olamaz (giriş yapamaz).
+    const guests = new Set((await db.all(`SELECT id FROM "User" WHERE id = ANY(?) AND role = 'GUEST'`, [[capA, capB].filter(Boolean)])).map((r: any) => r.id));
+    if (capA && guests.has(capA)) capA = null;
+    if (capB && guests.has(capB)) capB = null;
+    await db.run('UPDATE "Matches" SET "captainA" = ?, "captainB" = ? WHERE id = ?', [capA, capB, id]);
+
     // Takım adları (isteğe bağlı): "Yelekliler / Yeleksizler" gibi. Boşsa varsayılan.
     const cleanName = (v: any, def: string) => {
       const t = String(v ?? '').trim().replace(/\s+/g, ' ').slice(0, 20);
@@ -1839,29 +1856,50 @@ app.post('/api/matches/:id/save-teams', async (req, res) => {
       ]);
     }
 
-    res.json({ message: 'Takımlar kaydedildi!' });
+    // Yeni seçilen kaptana haber ver.
+    const names = await db.get('SELECT "teamAName", "teamBName" FROM "Matches" WHERE id = ?', [id]);
+    const pushes: PushMessage[] = [];
+    for (const [cap, old, teamName] of [[capA, before?.captainA, names?.teamAName || 'A Takımı'], [capB, before?.captainB, names?.teamBName || 'B Takımı']] as const) {
+      if (!cap || cap === old) continue;
+      const when = friendlyMatchTime(Number(before?.matchTimestamp));
+      await db.run('INSERT INTO "Notifications" (id, "userId", message, type, metadata) VALUES (?, ?, ?, ?, ?)', [
+        randomUUID(), cap, `${when} · ${before?.location}: ${teamName} takımının kaptanı sensin. Dizilişi sen ayarlayacaksın.`, 'INFO', JSON.stringify({ matchId: id }),
+      ]);
+      pushes.push({ userId: cap, title: `Kaptan sensin ©`, body: `${teamName} · ${when}: dizilişi sen ayarlayacaksın.`, data: { matchId: id } });
+    }
+    sendPushInBackground(pushes);
+
+    res.json({ message: 'Takımlar kaydedildi!', captainA: capA, captainB: capB });
   } catch (error) {
     res.status(500).json({ error: 'Takımları kaydetme hatası' });
   }
 });
 
-// SAHA DİZİLİMİ: yönetici maç öncesi her takımın dizilişini (ör. "2-2-1", kaleci hariç) ve
+// SAHA DİZİLİMİ: maç öncesi her takımın dizilişi (ör. "2-2-1", kaleci hariç) ve
 // oyuncuların sahadaki yerini (slot: 0 = kaleci, sonra defanstan forvete) kaydeder.
 const FORMATION_RE = /^[1-9](-[1-9]){0,3}$/;
+// Kim düzenler: o takımın kaptanı. Takımın kaptanı yoksa maçı yöneten kişi.
 app.post('/api/matches/:id/lineup', async (req, res) => {
   try {
     const { id } = req.params;
-    const perm = await canManageMatch(id, req.user.id);
-    if (!perm.exists) return res.status(404).json({ error: 'Maç bulunamadı.' });
-    if (!perm.allowed) return res.status(403).json({ error: 'Dizilişi sadece maçı yöneten ayarlayabilir.' });
-    const m = await db.get('SELECT status FROM "Matches" WHERE id = ?', [id]);
+    const team = req.body?.team;
+    if (team !== 'A' && team !== 'B') return res.status(400).json({ error: 'Takım belirtilmedi.' });
+    const m = await db.get('SELECT status, "captainA", "captainB" FROM "Matches" WHERE id = ?', [id]);
+    if (!m) return res.status(404).json({ error: 'Maç bulunamadı.' });
     if (m.status !== 'OPEN') return res.status(400).json({ error: 'Diziliş sadece oynanmamış maçta değiştirilebilir.' });
-
-    const fA = req.body?.formationA ?? null;
-    const fB = req.body?.formationB ?? null;
-    for (const f of [fA, fB]) {
-      if (f !== null && (typeof f !== 'string' || !FORMATION_RE.test(f))) return res.status(400).json({ error: 'Geçersiz diziliş.' });
+    let captain = team === 'A' ? m.captainA : m.captainB;
+    // Kaptan maçtan çekildiyse ya da takımı değiştiyse kaptan yok sayılır (yetki yöneticiye döner).
+    if (captain) {
+      const still = await db.get(`SELECT 1 FROM "MatchPlayers" WHERE "matchId" = ? AND "userId" = ? AND team = ? AND status = 'ACTIVE'`, [id, captain, team]);
+      if (!still) captain = null;
     }
+    const allowed = captain ? captain === req.user.id : (await canManageMatch(id, req.user.id)).allowed;
+    if (!allowed) {
+      return res.status(403).json({ error: captain ? 'Bu takımın dizilişini sadece kaptanı ayarlayabilir.' : 'Dizilişi sadece maçı yöneten ayarlayabilir.' });
+    }
+
+    const formation = req.body?.formation ?? null;
+    if (formation !== null && (typeof formation !== 'string' || !FORMATION_RE.test(formation))) return res.status(400).json({ error: 'Geçersiz diziliş.' });
     const slots = Array.isArray(req.body?.slots) ? req.body.slots : [];
     for (const x of slots) {
       if (typeof x?.userId !== 'string' || !(x.slot === null || (Number.isInteger(x.slot) && x.slot >= 0 && x.slot < 40))) {
@@ -1869,9 +1907,10 @@ app.post('/api/matches/:id/lineup', async (req, res) => {
       }
     }
     await tx(async (t) => {
-      await t.run('UPDATE "Matches" SET "teamAFormation" = ?, "teamBFormation" = ? WHERE id = ?', [fA, fB, id]);
+      await t.run(`UPDATE "Matches" SET "${team === 'A' ? 'teamAFormation' : 'teamBFormation'}" = ? WHERE id = ?`, [formation, id]);
       for (const x of slots) {
-        await t.run(`UPDATE "MatchPlayers" SET slot = ? WHERE "matchId" = ? AND "userId" = ? AND status = 'ACTIVE'`, [x.slot, id, x.userId]);
+        // Sadece o takımın oyuncuları
+        await t.run(`UPDATE "MatchPlayers" SET slot = ? WHERE "matchId" = ? AND "userId" = ? AND status = 'ACTIVE' AND team = ?`, [x.slot, id, x.userId, team]);
       }
     });
     res.json({ message: 'Diziliş kaydedildi.' });
