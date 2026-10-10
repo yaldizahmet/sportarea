@@ -1077,9 +1077,11 @@ export default function MatchDetailsScreen({ route, navigation }: any) {
           <View style={styles.teamsHint}>
             <Ionicons name="people-outline" size={16} color="#94A3B8" />
             <Text style={styles.teamsHintText}>
-              {isManager
-                ? 'Takımlar henüz belli değil. "Takım Böl"e bas; dengeli öneriyi istediğin gibi değiştirip kaydet.'
-                : 'Takımlar henüz belli değil. Yönetici böldüğünde burada iki takım olarak görünecek.'}
+              {matchInfo.weekly && matchInfo.groupAutoTeams
+                ? `Takımlar ${formatClock(ts - Math.max(lockHours, 2) * 3600 * 1000)}'de "Varım" diyenler arasından otomatik ve dengeli kurulacak.${isManager ? ' İstersen şimdi "Takım Böl" ile kendin de kurabilirsin.' : ''}`
+                : isManager
+                  ? 'Takımlar henüz belli değil. "Takım Böl"e bas; dengeli öneriyi istediğin gibi değiştirip kaydet.'
+                  : 'Takımlar henüz belli değil. Yönetici böldüğünde burada iki takım olarak görünecek.'}
             </Text>
           </View>
         ) : null}

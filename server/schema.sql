@@ -228,3 +228,7 @@ alter table sportarea."MatchPlayers" add column slot integer;
 alter table sportarea."Matches"
   add column "captainA" text references sportarea."User"(id) on delete set null,
   add column "captainB" text references sportarea."User"(id) on delete set null;
+
+-- v12: Haftalık maçlarda takımları otomatik kurma (grup ayarı, varsayılan açık).
+alter table sportarea."Groups" add column "autoTeams" boolean not null default true;
+alter table sportarea."Matches" add column weekly boolean not null default false, add column "teamsAutoAt" timestamptz;

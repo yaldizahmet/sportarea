@@ -60,6 +60,27 @@ export default function GroupDetailsScreen({ route, navigation }: any) {
   const myRole: 'founder' | 'admin' | 'member' = group.myRole || (isCreator ? 'founder' : 'member');
   const canAdmin = myRole === 'founder' || myRole === 'admin';
   const [transferModal, setTransferModal] = useState(false);
+  const [savingAuto, setSavingAuto] = useState(false);
+  const toggleAutoTeams = async (enabled: boolean) => {
+    setSavingAuto(true);
+    setGroup((g: any) => ({ ...g, autoTeams: enabled }));
+    try {
+      const res = await apiFetch(`${API_URL}/groups/${initialGroup.id}/auto-teams`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabled }),
+      });
+      if (!res.ok) {
+        const d = await res.json().catch(() => ({}));
+        showAlert('Olmadı', d.error || 'Kaydedilemedi.');
+        setGroup((g: any) => ({ ...g, autoTeams: !enabled }));
+      }
+    } catch (e) {
+      setGroup((g: any) => ({ ...g, autoTeams: !enabled }));
+      showAlert('Hata', 'Bağlantı sorunu yaşandı.');
+    }
+    setSavingAuto(false);
+  };
   const weekly = formatWeekly(group.weeklyDay, group.weeklyTime);
 
   const fetchGroup = async () => {
@@ -415,6 +436,21 @@ export default function GroupDetailsScreen({ route, navigation }: any) {
                 <Text style={styles.weeklyHint}>
                   Maç her hafta kendiliğinden açılır, gruba davet gider. Ayrıca kurmana gerek yok.
                 </Text>
+                <View style={styles.autoRow}>
+                  <View style={{ flex: 1, paddingRight: 10 }}>
+                    <Text style={styles.autoTitle}>Takımları otomatik kur</Text>
+                    <Text style={styles.weeklyHint}>
+                      Kadro kilitlenince (maçtan {Math.max(Number(group.weeklyLockoutHours ?? 3), 2)} saat önce) "Varım" diyenler puan ve mevkilerine göre dengeli iki takıma ayrılır, herkese bildirim gider. Takımları önceden elle kurarsan dokunulmaz.
+                    </Text>
+                  </View>
+                  <Switch
+                    value={group.autoTeams !== false}
+                    onValueChange={toggleAutoTeams}
+                    disabled={!canAdmin || savingAuto}
+                    trackColor={{ false: '#334155', true: 'rgba(0, 230, 118, 0.5)' }}
+                    thumbColor={group.autoTeams !== false ? '#00E676' : '#94A3B8'}
+                  />
+                </View>
               </View>
             ) : (
               <Text style={styles.weeklyHint}>
@@ -657,6 +693,8 @@ const styles = StyleSheet.create({
 
   weeklyMain: { color: '#FFFFFF', fontSize: 18, fontWeight: 'bold' },
   weeklySub: { color: '#CBD5E1', fontSize: 14, marginTop: 4 },
+  autoRow: { flexDirection: 'row', alignItems: 'center', marginTop: 14, paddingTop: 12, borderTopWidth: 1, borderTopColor: 'rgba(255,255,255,0.06)' },
+  autoTitle: { color: '#FFFFFF', fontSize: 15, fontWeight: '600' },
   weeklyHint: { color: '#94A3B8', fontSize: 13, marginTop: 6, lineHeight: 18 },
   nightHint: { color: '#FFC107', fontSize: 12, marginTop: -4, marginBottom: 10 },
 

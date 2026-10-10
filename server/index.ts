@@ -160,8 +160,8 @@ async function ensureUpcomingMatch(groupId: string): Promise<string | null> {
     const matchId = randomUUID();
     const maxPlayers = g.weeklyMaxPlayers || 14;
     await t.run(
-      `INSERT INTO "Matches" (id, "groupId", "creatorId", date, time, location, "maxPlayers", "matchTimestamp", "lockoutHours", "pitchFee")
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO "Matches" (id, "groupId", "creatorId", date, time, location, "maxPlayers", "matchTimestamp", "lockoutHours", "pitchFee", weekly)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, true)`,
       [matchId, groupId, g.creatorId, next.label, g.weeklyTime, g.weeklyLocation, maxPlayers, next.ts, g.weeklyLockoutHours ?? 3, g.weeklyFee ?? null]
     );
 
@@ -608,6 +608,19 @@ app.post('/api/groups/:id/always-in', async (req, res) => {
 
 // Bir üyeyi gruptan çıkarır: yaklaşan maçlarda kadrodaysa yerini boşaltır (ilk yedek kadroya geçer),
 // cevaplarını ve bekleyen davetlerini temizler. Kilit süresi dolmuş maçlarda kadroda kalır.
+// Grup ayarı: haftalık maçlarda takımları otomatik kur (kurucu ya da yönetici değiştirir).
+app.post('/api/groups/:id/auto-teams', async (req, res) => {
+  try {
+    const role = await groupRole(req.params.id, req.user.id);
+    if (role !== 'founder' && role !== 'admin') return res.status(403).json({ error: 'Bu ayarı sadece kurucu ya da yöneticiler değiştirebilir.' });
+    const enabled = Boolean(req.body?.enabled);
+    await db.run('UPDATE "Groups" SET "autoTeams" = ? WHERE id = ?', [enabled, req.params.id]);
+    res.json({ message: enabled ? 'Takımlar otomatik kurulacak.' : 'Otomatik takım kurma kapatıldı.', autoTeams: enabled });
+  } catch (e) {
+    res.status(500).json({ error: 'Kaydedilemedi.' });
+  }
+});
+
 async function removeFromGroup(groupId: string, userId: string) {
   const upcoming = await db.all(
     `SELECT m.id FROM "Matches" m
@@ -1130,8 +1143,44 @@ async function runCronTick() {
     });
   }
 
+  // 4) Haftalık maçta takımları otomatik kur: kadro kilitlenince (kilit yoksa maçtan 2 saat önce),
+  //    grup ayarı açıksa ve yönetici takımları elle kurmadıysa "Varım" diyenleri dengeli iki takıma böl.
+  const autoTeamCandidates = await db.all(
+    `SELECT m.id, m.location, m."matchTimestamp", m."teamAName", m."teamBName" FROM "Matches" m JOIN "Groups" g ON g.id = m."groupId"
+     WHERE m.weekly AND g."autoTeams" AND m.status = 'OPEN' AND m."teamsAutoAt" IS NULL
+       AND m."matchTimestamp" > ? AND ? >= m."matchTimestamp" - GREATEST(COALESCE(m."lockoutHours", 0), 2) * 3600000`,
+    [now, now]
+  );
+  let autoTeams = 0;
+  for (const m of autoTeamCandidates) {
+    try {
+      await db.run('UPDATE "Matches" SET "teamsAutoAt" = now() WHERE id = ?', [m.id]);
+      const already = await db.get(`SELECT 1 FROM "MatchPlayers" WHERE "matchId" = ? AND team IN ('A', 'B') LIMIT 1`, [m.id]);
+      if (already) continue; // yönetici elle kurmuş
+      const players = await activePlayers(m.id);
+      if (players.length < 4) continue;
+      const { teamA, teamB } = await balanceTeams(players);
+      await saveTeams(m.id, teamA.map((p: any) => p.id), teamB.map((p: any) => p.id));
+      autoTeams++;
+      const when = friendlyMatchTime(Number(m.matchTimestamp));
+      const nameOf = (team: 'A' | 'B') => (team === 'A' ? m.teamAName || 'A Takımı' : m.teamBName || 'B Takımı');
+      for (const [team, list] of [['A', teamA], ['B', teamB]] as const) {
+        for (const p of list) {
+          pushes.push({
+            userId: p.id,
+            title: `Takımlar belli oldu ⚽`,
+            body: `${when} · ${m.location}: ${team === 'A' ? '🔵' : '🔴'} ${nameOf(team)} takımındasın.`,
+            data: { matchId: m.id },
+          });
+        }
+      }
+    } catch (err) {
+      console.error('Auto teams error:', err);
+    }
+  }
+
   const { sent } = await sendPush(pushes);
-  return { opened, remindedMatches: due.length, reminders, finishReminders: unfinished.length, pushSent: sent };
+  return { opened, remindedMatches: due.length, reminders, finishReminders: unfinished.length, autoTeams, pushSent: sent };
 }
 
 app.post('/api/cron/tick', async (req, res) => {
@@ -1240,7 +1289,7 @@ app.post('/api/matches', async (req, res) => {
 app.get('/api/matches/:id', async (req, res) => {
   try {
     const match = await db.get(
-      `SELECT m.*, g.name AS "groupName", g."creatorId" AS "groupCreatorId"
+      `SELECT m.*, g.name AS "groupName", g."creatorId" AS "groupCreatorId", g."autoTeams" AS "groupAutoTeams"
        FROM "Matches" m LEFT JOIN "Groups" g ON g.id = m."groupId" WHERE m.id = ?`,
       [req.params.id]
     );
@@ -1475,7 +1524,8 @@ type MatchAnswer = 'YES' | 'NO' | 'MAYBE';
 type RespondResult = { status: number; body: any };
 
 // Kadrodan biri çıkınca ilk yedeği kadroya alır. Yedek bir misafirse haber onu getirene gider.
-async function promoteFirstReserve(t: any, matchId: string, matchRow: any, pushes: PushMessage[]) {
+// inherit: kadrodan çıkan kişinin takımı ve sahadaki yeri; yedekten gelen onun yerine geçer.
+async function promoteFirstReserve(t: any, matchId: string, matchRow: any, pushes: PushMessage[], inherit?: { team?: string | null; slot?: number | null }) {
   const first = await t.get(
     `SELECT mp."userId", mp."invitedBy", u.name, u.role FROM "MatchPlayers" mp JOIN "User" u ON u.id = mp."userId"
      WHERE mp."matchId" = ? AND mp.status = 'RESERVE' ORDER BY mp."joinedAt" ASC LIMIT 1`,
@@ -1483,6 +1533,9 @@ async function promoteFirstReserve(t: any, matchId: string, matchRow: any, pushe
   );
   if (!first) return;
   await t.run(`UPDATE "MatchPlayers" SET status = 'ACTIVE' WHERE "matchId" = ? AND "userId" = ?`, [matchId, first.userId]);
+  if (inherit?.team === 'A' || inherit?.team === 'B') {
+    await t.run(`UPDATE "MatchPlayers" SET team = ?, slot = ? WHERE "matchId" = ? AND "userId" = ?`, [inherit.team, inherit.slot ?? null, matchId, first.userId]);
+  }
   const when = friendlyMatchTime(Number(matchRow.matchTimestamp));
   const isGuest = first.role === 'GUEST';
   const to = isGuest ? first.invitedBy : first.userId;
@@ -1518,7 +1571,7 @@ async function respondToMatch(matchId: string, userId: string, response: MatchAn
       if (!member) return { status: 403, body: { error: 'Bu maç sadece grup üyelerine açık.' } };
     }
 
-    const current = await t.get('SELECT status FROM "MatchPlayers" WHERE "matchId" = ? AND "userId" = ?', [matchId, userId]);
+    const current = await t.get('SELECT status, team, slot FROM "MatchPlayers" WHERE "matchId" = ? AND "userId" = ?', [matchId, userId]);
     const locked = isLockedOut(matchRow);
 
     // Cevap verildiyse, bu maç için bekleyen davet bildirimi artık gereksiz.
@@ -1567,7 +1620,7 @@ async function respondToMatch(matchId: string, userId: string, response: MatchAn
       }
       await t.run('DELETE FROM "MatchPlayers" WHERE "matchId" = ? AND "userId" = ?', [matchId, userId]);
 
-      if (current.status === 'ACTIVE') await promoteFirstReserve(t, matchId, matchRow, pushes);
+      if (current.status === 'ACTIVE') await promoteFirstReserve(t, matchId, matchRow, pushes, { team: current.team, slot: current.slot });
     }
 
     await t.run(
@@ -1698,7 +1751,7 @@ app.delete('/api/matches/:id/guests/:guestId', async (req, res) => {
       );
       if (!m) return { status: 404, body: { error: 'Maç bulunamadı.' } };
       const g = await t.get(
-        `SELECT mp.status, mp."invitedBy" FROM "MatchPlayers" mp JOIN "User" u ON u.id = mp."userId"
+        `SELECT mp.status, mp."invitedBy", mp.team, mp.slot FROM "MatchPlayers" mp JOIN "User" u ON u.id = mp."userId"
          WHERE mp."matchId" = ? AND mp."userId" = ? AND u.role = 'GUEST'`,
         [matchId, guestId]
       );
@@ -1707,7 +1760,7 @@ app.delete('/api/matches/:id/guests/:guestId', async (req, res) => {
       if (m.status === 'COMPLETED') return { status: 400, body: { error: 'Tamamlanmış maçtan misafir çıkarılamaz.' } };
 
       await t.run('DELETE FROM "MatchPlayers" WHERE "matchId" = ? AND "userId" = ?', [matchId, guestId]);
-      if (g.status === 'ACTIVE') await promoteFirstReserve(t, matchId, m, pushes);
+      if (g.status === 'ACTIVE') await promoteFirstReserve(t, matchId, m, pushes, { team: g.team, slot: g.slot });
       await t.run(`DELETE FROM "User" WHERE id = ? AND role = 'GUEST'`, [guestId]);
       return { status: 200, body: { message: 'Misafir çıkarıldı.' } };
     });
