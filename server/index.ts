@@ -1886,9 +1886,12 @@ app.post('/api/matches/:id/finish', async (req, res) => {
     if (!perm.allowed) return res.status(403).json({ error: 'Maçı sadece kuran kişi bitirebilir.' });
     const cur = await db.get('SELECT status FROM "Matches" WHERE id = ?', [id]);
     if (cur?.status === 'CANCELLED') return res.status(400).json({ error: 'İptal edilmiş maç bitirilemez.' });
+    // Zaten bitmiş maç: bu bir "sonucu düzelt" isteğidir. Skor ve goller yeniden yazılır, bildirim gitmez.
+    const correcting = cur?.status === 'COMPLETED';
 
     await tx(async (t) => {
       await t.run(`UPDATE "Matches" SET status = 'COMPLETED', score = ? WHERE id = ?`, [score || null, id]);
+      if (correcting) await t.run('UPDATE "MatchPlayers" SET goals = 0 WHERE "matchId" = ?', [id]);
 
       if (Array.isArray(scorers)) {
         for (const s of scorers) {
@@ -1899,6 +1902,7 @@ app.post('/api/matches/:id/finish', async (req, res) => {
         }
       }
 
+      if (correcting) return;
       const matchRow = await t.get('SELECT location FROM "Matches" WHERE id = ?', [id]);
       await t.run(
         `INSERT INTO "Notifications" (id, "userId", message, type)
@@ -1907,6 +1911,8 @@ app.post('/api/matches/:id/finish', async (req, res) => {
         [`${matchRow?.location || 'Maç'} tamamlandı! İstatistiklerin işlendi. Hemen detaylara göz atabilir ve oyuncuları puanlayabilirsin.`, id]
       );
     });
+
+    if (correcting) return res.json({ message: 'Sonuç düzeltildi.' });
 
     // Sadece sahada oynayanlara: MVP oyu ve puanlama hatırlatması
     const played = await db.all(`SELECT "userId" FROM "MatchPlayers" WHERE "matchId" = ? AND status = 'ACTIVE' AND "userId" <> ?`, [id, req.user.id]);

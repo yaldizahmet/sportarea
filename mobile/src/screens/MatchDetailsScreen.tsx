@@ -63,6 +63,7 @@ export default function MatchDetailsScreen({ route, navigation }: any) {
   
   // Finish Match
   const [finishModalVisible, setFinishModalVisible] = useState(false);
+  const [fixingResult, setFixingResult] = useState(false); // bitmiş maçın sonucunu düzeltme
   const [scoreA, setScoreA] = useState('');
   const [scoreB, setScoreB] = useState('');
   const [playerGoals, setPlayerGoals] = useState<{ [id: string]: number }>({});
@@ -204,6 +205,19 @@ export default function MatchDetailsScreen({ route, navigation }: any) {
     }
   };
 
+  // Bitmiş maç: skor ve golleri mevcut hâliyle doldurup düzeltme penceresini aç.
+  const openFixResult = () => {
+    const sc = String(matchScore || matchInfo.score || '');
+    const m = /^\s*(\d+)\s*-\s*(\d+)\s*$/.exec(sc);
+    setScoreA(m ? m[1] : '');
+    setScoreB(m ? m[2] : '');
+    const goals: { [id: string]: number } = {};
+    players.forEach((p: any) => { if (p.status === 'ACTIVE' && p.goals > 0) goals[p.id] = p.goals; });
+    setPlayerGoals(goals);
+    setFixingResult(true);
+    setFinishModalVisible(true);
+  };
+
   const submitFinishMatch = async () => {
     try {
       const finalScore = (scoreA && scoreB) ? `${scoreA} - ${scoreB}` : '';
@@ -215,10 +229,13 @@ export default function MatchDetailsScreen({ route, navigation }: any) {
       });
       if (res.ok) {
         setMatchStatus('COMPLETED');
-        if (finalScore) setMatchScore(finalScore);
+        setMatchScore(finalScore);
         setFinishModalVisible(false);
         fetchPlayers();
-        Alert.alert('Maç Bitti', 'Skor ve golcüler kaydedildi. Artık oyuncuları puanlayabilirsiniz!');
+        fetchMatchInfo();
+        if (fixingResult) Alert.alert('Düzeltildi', 'Skor ve goller güncellendi.');
+        else Alert.alert('Maç Bitti', 'Skor ve golcüler kaydedildi. Artık oyuncuları puanlayabilirsiniz!');
+        setFixingResult(false);
       } else {
         const errorData = await res.json();
         Alert.alert('Hata', errorData?.error || 'Kayıt başarısız oldu.');
@@ -856,14 +873,23 @@ export default function MatchDetailsScreen({ route, navigation }: any) {
                   <Text style={{ color: '#FFF', fontSize: 30, fontWeight: '900', marginHorizontal: 14 }}>{String(matchScore || matchInfo.score).replace(/\s*-\s*/, ' - ')}</Text>
                   <Text style={{ color: '#F87171', fontSize: 14, fontWeight: 'bold', flex: 1, textAlign: 'left' }} numberOfLines={1}>{matchInfo.teamBName || 'B Takımı'}</Text>
                 </View>
+                {isManager ? (
+                  <TouchableOpacity onPress={openFixResult} style={{ marginTop: 10 }} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+                    <Text style={{ color: '#FFC107', fontSize: 13, textDecorationLine: 'underline' }}>Sonucu düzelt</Text>
+                  </TouchableOpacity>
+                ) : null}
              </View>
+          ) : isCompleted && isManager ? (
+             <TouchableOpacity onPress={openFixResult} style={{ marginTop: 14, alignSelf: 'center' }} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+               <Text style={{ color: '#FFC107', fontSize: 13, textDecorationLine: 'underline' }}>Skor girilmemiş, eklemek için dokun</Text>
+             </TouchableOpacity>
           ) : null}
 
 
         </LinearGradient>
 
         {/* Saha: her platformda çalışan tek tık yol tarifi */}
-        {matchInfo.location ? (
+        {matchInfo.location && !isCompleted && !isCancelled ? (
           <TouchableOpacity activeOpacity={0.85} onPress={openDirections} style={styles.locationCard}>
             <Ionicons name="navigate-circle" size={36} color="#00E676" />
             <View style={{ flex: 1, marginLeft: 12 }}>
@@ -936,7 +962,7 @@ export default function MatchDetailsScreen({ route, navigation }: any) {
               ? `Oynayanlar (${activePlayers.length})`
               : `Kadro (${activePlayers.length}/${matchInfo.maxPlayers || 14})`}
           </Text>
-          {isManager && !isCancelled && activePlayers.length >= 2 && (
+          {isManager && !isCancelled && !isCompleted && activePlayers.length >= 2 && (
             <TouchableOpacity onPress={openTeams} style={styles.divideButton}>
               <Text style={styles.divideButtonText}>{teamsDivided ? 'Takımları düzenle' : 'Takım Böl 🎲'}</Text>
             </TouchableOpacity>
@@ -1132,7 +1158,7 @@ export default function MatchDetailsScreen({ route, navigation }: any) {
 
       {phase === 'started' && isManager && (
         <View style={styles.footer}>
-          <TouchableOpacity style={styles.finishBtn} onPress={() => setFinishModalVisible(true)} activeOpacity={0.85}>
+          <TouchableOpacity style={styles.finishBtn} onPress={() => { setFixingResult(false); setFinishModalVisible(true); }} activeOpacity={0.85}>
             <Ionicons name="flag" size={20} color="#0F172A" />
             <Text style={styles.finishBtnText}>Maçı bitir, skoru gir</Text>
           </TouchableOpacity>
@@ -1296,8 +1322,12 @@ export default function MatchDetailsScreen({ route, navigation }: any) {
       <Modal visible={finishModalVisible} transparent animationType="slide">
         <View style={styles.modalOverlay}>
           <View style={styles.modalContent}>
-            <Text style={styles.modalTitle}>Maç Sonucu</Text>
-            <Text style={{color: '#94A3B8', textAlign: 'center', marginBottom: 20}}>Lütfen A Takımı ve B Takımı'nın skorlarını girin veya boş bırakarak devam edin.</Text>
+            <Text style={styles.modalTitle}>{fixingResult ? 'Sonucu düzelt' : 'Maç Sonucu'}</Text>
+            <Text style={{color: '#94A3B8', textAlign: 'center', marginBottom: 20}}>
+              {fixingResult
+                ? 'Skoru ve gol atanları düzelt. Bildirim tekrar gönderilmez.'
+                : 'İki takımın skorunu gir ya da boş bırakarak devam et.'}
+            </Text>
             
             <View style={{flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20}}>
                <View style={{alignItems: 'center', flex: 1}}>
@@ -1332,7 +1362,7 @@ export default function MatchDetailsScreen({ route, navigation }: any) {
                   <Text style={{color: '#94A3B8', fontSize: 13, marginBottom: 10}}>Golcüler:</Text>
                   {activePlayers.map((p: any) => (
                      <View key={p.id} style={{flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10, backgroundColor: 'rgba(255,255,255,0.05)', padding: 10, borderRadius: 10}}>
-                        <Text style={{color: '#FFF', flex: 1}} numberOfLines={1}>{displayName(p)}{p.team === 'A' || p.team === 'B' ? ` (${p.team} Takımı)` : ''}</Text>
+                        <Text style={{color: '#FFF', flex: 1}} numberOfLines={1}>{displayName(p)}{p.team === 'A' ? ` (${matchInfo.teamAName || 'A Takımı'})` : p.team === 'B' ? ` (${matchInfo.teamBName || 'B Takımı'})` : ''}</Text>
                         <View style={{flexDirection: 'row', alignItems: 'center'}}>
                            <TouchableOpacity style={{backgroundColor: '#334155', width: 28, height: 28, borderRadius: 14, alignItems: 'center', justifyContent: 'center'}} onPress={() => setPlayerGoals(prev => ({...prev, [p.id]: Math.max(0, (prev[p.id] || 0) - 1)}))}>
                               <Text style={{color: '#FFF', fontWeight: 'bold'}}>-</Text>
@@ -1349,7 +1379,7 @@ export default function MatchDetailsScreen({ route, navigation }: any) {
 
             <TouchableOpacity style={styles.saveBtn} onPress={submitFinishMatch}>
                <LinearGradient colors={['#EF4444', '#DC2626']} start={{x: 0, y: 0}} end={{x: 1, y: 0}} style={styles.saveBtnGradient}>
-                 <Text style={[styles.saveBtnText, {color: '#FFF'}]}>MAÇI BİTİR VE KAYDET</Text>
+                 <Text style={[styles.saveBtnText, {color: '#FFF'}]}>{fixingResult ? 'DÜZELTMEYİ KAYDET' : 'MAÇI BİTİR VE KAYDET'}</Text>
                </LinearGradient>
             </TouchableOpacity>
             <TouchableOpacity style={styles.cancelBtn} onPress={() => setFinishModalVisible(false)}>
