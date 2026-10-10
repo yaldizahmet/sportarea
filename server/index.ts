@@ -1024,6 +1024,19 @@ app.post('/api/push-token', async (req, res) => {
 });
 
 // Çıkış yaparken: bu telefona artık bu hesabın bildirimleri gelmesin.
+// Profil -> "Test bildirimi gönder": bu hesabın kayıtlı cihazlarına deneme bildirimi yollar,
+// Expo'dan dönen sonucu olduğu gibi gösterir (sorun nerede anlaşılsın diye).
+app.post('/api/push/test', async (req, res) => {
+  try {
+    const devices = await db.get('SELECT COUNT(*) AS c FROM "PushTokens" WHERE "userId" = ?', [req.user.id]);
+    if (!devices?.c) return res.json({ devices: 0, sent: 0, errors: [] });
+    const r = await sendPush([{ userId: req.user.id, title: 'SporArea ⚽', body: 'Test bildirimi: bildirimler çalışıyor!', data: {} }]);
+    res.json({ devices: devices.c, ...r });
+  } catch (e) {
+    res.status(500).json({ error: 'Test bildirimi gönderilemedi.' });
+  }
+});
+
 app.delete('/api/push-token', async (req, res) => {
   try {
     const token = String(req.body?.token ?? '').trim();

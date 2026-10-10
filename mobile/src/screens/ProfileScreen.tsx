@@ -22,7 +22,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { StatusBar } from 'expo-status-bar';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { API_URL } from '../config/api';
-import { unregisterPush } from '../utils/push';
+import { unregisterPush, setupPush, explainPushError } from '../utils/push';
 import ChangePasswordModal from '../components/ChangePasswordModal';
 import Avatar, { AVATAR_EMOJIS } from '../components/Avatar';
 import { displayName, shortName } from '../utils/format';
@@ -42,6 +42,7 @@ export default function ProfileScreen({ navigation, route }: any) {
   const [avatarUrl, setAvatarUrl] = useState(user.avatar || '');
   const [avatarSaving, setAvatarSaving] = useState(false);
   const [avatarModal, setAvatarModal] = useState(false);
+  const [pushTesting, setPushTesting] = useState(false);
   const [nickname, setNickname] = useState<string>(user.nickname || '');
   const [nickModal, setNickModal] = useState(false);
   const [nickInput, setNickInput] = useState('');
@@ -114,6 +115,33 @@ export default function ProfileScreen({ navigation, route }: any) {
   const notify = (title: string, msg: string) => {
     if (Platform.OS === 'web') window.alert(`${title}\n\n${msg}`);
     else Alert.alert(title, msg);
+  };
+
+  // Bildirim testi: kaydı adım adım dener, sonra bu hesaba deneme bildirimi yollar ve sonucu gösterir.
+  const testPush = async () => {
+    setPushTesting(true);
+    try {
+      const setup = await setupPush();
+      if (!setup.ok) {
+        if (setup.canOpenSettings && Platform.OS !== 'web') {
+          Alert.alert('Bildirim izni kapalı', setup.message, [
+            { text: 'Vazgeç', style: 'cancel' },
+            { text: 'Ayarları aç', onPress: () => Linking.openSettings() },
+          ]);
+        } else notify('Bildirim kurulamadı', setup.message);
+        return;
+      }
+      const res = await apiFetch(`${API_URL}/push/test`, { method: 'POST' });
+      const data = await res.json();
+      if (!res.ok) return notify('Hata', data.error || 'Test bildirimi gönderilemedi.');
+      if (data.sent > 0) notify('Gönderildi ✓', 'Telefon bu cihaz için kaydedildi. Test bildirimi birkaç saniye içinde gelmeli.');
+      else if (data.errors?.length) notify('Bildirim gönderilemedi', explainPushError(String(data.errors[0])));
+      else notify('Gönderilemedi', 'Bu hesap için kayıtlı cihaz bulunamadı.');
+    } catch (e) {
+      notify('Hata', 'Bağlantı sorunu yaşandı.');
+    } finally {
+      setPushTesting(false);
+    }
   };
 
   const saveAvatar = async (value: string | null) => {
@@ -342,6 +370,13 @@ export default function ProfileScreen({ navigation, route }: any) {
           <Text style={styles.editProfileText}>{avatarSaving ? 'Kaydediliyor...' : 'Fotoğraf / Avatar Değiştir'}</Text>
           <Ionicons name="happy-outline" size={20} color="#FFFFFF" style={{marginLeft: 10}} />
         </TouchableOpacity>
+
+        {Platform.OS !== 'web' && (
+          <TouchableOpacity style={[styles.editProfileButton, { marginTop: 12 }]} onPress={testPush} disabled={pushTesting}>
+            <Text style={styles.editProfileText}>{pushTesting ? 'Deneniyor...' : 'Bildirimleri Test Et'}</Text>
+            <Ionicons name="notifications-outline" size={20} color="#FFFFFF" style={{marginLeft: 10}} />
+          </TouchableOpacity>
+        )}
 
         <TouchableOpacity style={[styles.editProfileButton, { marginTop: 12 }]} onPress={() => setPasswordModal(true)}>
           <Text style={styles.editProfileText}>Şifre Değiştir</Text>
