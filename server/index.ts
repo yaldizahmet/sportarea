@@ -1409,7 +1409,7 @@ app.get('/api/matches/:id/players', async (req, res) => {
   try {
     const { id } = req.params;
     const players: any[] = await db.all(`
-      SELECT u.id, u.name, u.nickname, u.avatar, u.position, mp.team, mp.goals, mp.status, mp.paid,
+      SELECT u.id, u.name, u.nickname, u.avatar, u.position, mp.team, mp.goals, mp.status, mp.paid, mp.slot,
              (u.role = 'GUEST') AS "isGuest", mp."invitedBy", inv.name AS "invitedByName", inv.nickname AS "invitedByNickname",
              myr.speed AS "mySpeed", myr.shoot AS "myShoot", myr.pass AS "myPass", myr.physique AS "myPhysique",
              mr.avg AS "matchRatingRaw", COALESCE(mr.c, 0) AS "matchRatingCount"
@@ -1763,11 +1763,16 @@ async function balanceTeams(players: any[]) {
   };
 }
 
+// Takımları kaydeder. Takımı değişmeyen oyuncunun sahadaki yeri (slot) korunur, değişenin yeri sıfırlanır.
 const saveTeams = (matchId: string, teamA: string[], teamB: string[]) =>
   tx(async (t) => {
-    await t.run(`UPDATE "MatchPlayers" SET team = 'UNASSIGNED' WHERE "matchId" = ?`, [matchId]);
-    await t.run(`UPDATE "MatchPlayers" SET team = 'A' WHERE "matchId" = ? AND "userId" = ANY(?)`, [matchId, teamA]);
-    await t.run(`UPDATE "MatchPlayers" SET team = 'B' WHERE "matchId" = ? AND "userId" = ANY(?)`, [matchId, teamB]);
+    await t.run(
+      `UPDATE "MatchPlayers" SET team = 'UNASSIGNED', slot = NULL
+       WHERE "matchId" = ? AND NOT ("userId" = ANY(?) OR "userId" = ANY(?))`,
+      [matchId, teamA, teamB]
+    );
+    await t.run(`UPDATE "MatchPlayers" SET slot = CASE WHEN team = 'A' THEN slot END, team = 'A' WHERE "matchId" = ? AND "userId" = ANY(?)`, [matchId, teamA]);
+    await t.run(`UPDATE "MatchPlayers" SET slot = CASE WHEN team = 'B' THEN slot END, team = 'B' WHERE "matchId" = ? AND "userId" = ANY(?)`, [matchId, teamB]);
   });
 
 const activePlayers = (matchId: string) => db.all(`
@@ -1837,6 +1842,42 @@ app.post('/api/matches/:id/save-teams', async (req, res) => {
     res.json({ message: 'Takımlar kaydedildi!' });
   } catch (error) {
     res.status(500).json({ error: 'Takımları kaydetme hatası' });
+  }
+});
+
+// SAHA DİZİLİMİ: yönetici maç öncesi her takımın dizilişini (ör. "2-2-1", kaleci hariç) ve
+// oyuncuların sahadaki yerini (slot: 0 = kaleci, sonra defanstan forvete) kaydeder.
+const FORMATION_RE = /^[1-9](-[1-9]){0,3}$/;
+app.post('/api/matches/:id/lineup', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const perm = await canManageMatch(id, req.user.id);
+    if (!perm.exists) return res.status(404).json({ error: 'Maç bulunamadı.' });
+    if (!perm.allowed) return res.status(403).json({ error: 'Dizilişi sadece maçı yöneten ayarlayabilir.' });
+    const m = await db.get('SELECT status FROM "Matches" WHERE id = ?', [id]);
+    if (m.status !== 'OPEN') return res.status(400).json({ error: 'Diziliş sadece oynanmamış maçta değiştirilebilir.' });
+
+    const fA = req.body?.formationA ?? null;
+    const fB = req.body?.formationB ?? null;
+    for (const f of [fA, fB]) {
+      if (f !== null && (typeof f !== 'string' || !FORMATION_RE.test(f))) return res.status(400).json({ error: 'Geçersiz diziliş.' });
+    }
+    const slots = Array.isArray(req.body?.slots) ? req.body.slots : [];
+    for (const x of slots) {
+      if (typeof x?.userId !== 'string' || !(x.slot === null || (Number.isInteger(x.slot) && x.slot >= 0 && x.slot < 40))) {
+        return res.status(400).json({ error: 'Geçersiz oyuncu yeri.' });
+      }
+    }
+    await tx(async (t) => {
+      await t.run('UPDATE "Matches" SET "teamAFormation" = ?, "teamBFormation" = ? WHERE id = ?', [fA, fB, id]);
+      for (const x of slots) {
+        await t.run(`UPDATE "MatchPlayers" SET slot = ? WHERE "matchId" = ? AND "userId" = ? AND status = 'ACTIVE'`, [x.slot, id, x.userId]);
+      }
+    });
+    res.json({ message: 'Diziliş kaydedildi.' });
+  } catch (e) {
+    console.error('Lineup error:', e);
+    res.status(500).json({ error: 'Diziliş kaydedilemedi.' });
   }
 });
 

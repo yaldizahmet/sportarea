@@ -219,3 +219,7 @@ alter table sportarea."User" add column nickname text check (char_length(nicknam
 
 -- v9: Grup yöneticileri. Kurucu üyeleri yönetici yapabilir; yöneticiler maçları ve haftalık ayarı yönetir.
 alter table sportarea."GroupMembers" add column "isAdmin" boolean not null default false;
+
+-- v10: Maça özel saha dizilimi. Diziliş kaleci hariç ("2-2-1"); slot 0 = kaleci, sonra defanstan forvete.
+alter table sportarea."Matches" add column "teamAFormation" text, add column "teamBFormation" text;
+alter table sportarea."MatchPlayers" add column slot integer;

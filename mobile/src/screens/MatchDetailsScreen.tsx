@@ -25,6 +25,7 @@ import { matchLink } from "../utils/invite";
 import { formatMatchDate, formatClock, formatMoney, shareOf, DAY_NAMES_SHORT, displayName, realNameHint } from "../utils/format";
 import Avatar from "../components/Avatar";
 import PitchView from "../components/PitchView";
+import { computeLineup, ROLE_LABEL } from "../utils/lineup";
 
 const EDIT_HOURS = ['18:00', '19:00', '20:00', '21:00', '22:00', '23:00', '00:00'];
 const EDIT_LOCKOUTS = [0, 1, 3, 6, 12];
@@ -100,6 +101,7 @@ export default function MatchDetailsScreen({ route, navigation }: any) {
   // Takım penceresi: A / B / takımsız listeleri elle düzenlenir (oyuncuya dokun -> diğer takıma geçer).
   // Takımların görünümü: liste ya da saha şeması (seçim telefonda hatırlanır)
   const [teamView, setTeamView] = useState<'list' | 'pitch'>('list');
+  const [scrollLocked, setScrollLocked] = useState(false); // sahada oyuncu sürüklenirken sayfa kaymasın
   useEffect(() => {
     AsyncStorage.getItem('teamView').then((v) => { if (v === 'pitch' || v === 'list') setTeamView(v); }).catch(() => {});
   }, []);
@@ -597,6 +599,37 @@ export default function MatchDetailsScreen({ route, navigation }: any) {
   const teamB = activePlayers.filter((p: any) => p.team === 'B');
   const unassigned = activePlayers.filter((p: any) => p.team !== 'A' && p.team !== 'B');
   const teamsDivided = teamA.length > 0 || teamB.length > 0;
+  // Maça özel diziliş: sahada ve listede aynı roller (kaleci, defans...) görünür.
+  const lineA = computeLineup(teamA, matchInfo.teamAFormation);
+  const lineB = computeLineup(teamB, matchInfo.teamBFormation);
+  const matchRoleOf = (id: string) => lineA.roleOf.get(id) ?? lineB.roleOf.get(id);
+  const bySlot = (line: ReturnType<typeof computeLineup>) => (x: any, y: any) =>
+    (line.slotOf.get(x.id) ?? 99) - (line.slotOf.get(y.id) ?? 99);
+  const lineupEditable = isManager && !isCompleted && !isCancelled;
+
+  const saveLineup = async (c: { team: 'A' | 'B'; formation: string; slots: { userId: string; slot: number }[] }) => {
+    const fA = c.team === 'A' ? c.formation : (lineA.formation || null);
+    const fB = c.team === 'B' ? c.formation : (lineB.formation || null);
+    // Hemen ekrana yansıt, sonra kaydet.
+    const slotMap = new Map(c.slots.map((x) => [x.userId, x.slot]));
+    setPlayers((prev) => prev.map((p: any) => (slotMap.has(p.id) ? { ...p, slot: slotMap.get(p.id) } : p)));
+    setMatchInfo((prev: any) => ({ ...prev, teamAFormation: fA, teamBFormation: fB }));
+    try {
+      const res = await apiFetch(`${API_URL}/matches/${matchInfo.id}/lineup`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ formationA: fA || null, formationB: fB || null, slots: c.slots }),
+      });
+      if (!res.ok) {
+        const d = await res.json().catch(() => ({}));
+        Alert.alert('Kaydedilemedi', d.error || 'Diziliş kaydedilemedi.');
+        fetchPlayers();
+        fetchMatchInfo();
+      }
+    } catch (e) {
+      Alert.alert('Hata', 'Bağlantı sorunu yaşandı.');
+    }
+  };
   const myTeam = players.find((p: any) => p.id === user.id)?.team;
   const myTeamLabel = teamsDivided && myTeam === 'A' ? `🔵 ${matchInfo.teamAName || 'A Takımı'}`
     : teamsDivided && myTeam === 'B' ? `🔴 ${matchInfo.teamBName || 'B Takımı'}` : '';
@@ -739,9 +772,17 @@ export default function MatchDetailsScreen({ route, navigation }: any) {
           <View style={{ flexShrink: 1 }}>
             <Text style={styles.playerName} numberOfLines={1}>{displayName(player)}</Text>
             {player.isGuest ? (
-              <Text style={styles.guestLine}>Misafir{player.invitedByName ? ` · ${player.invitedBy === user.id ? 'senin' : `${displayName({ name: player.invitedByName, nickname: player.invitedByNickname })} getirdi`}` : ''}</Text>
+              <Text style={styles.guestLine} numberOfLines={1}>
+                {teamsDivided && player.status === 'ACTIVE' && matchRoleOf(player.id) ? `${ROLE_LABEL[matchRoleOf(player.id)!]} · ` : ''}
+                Misafir{player.invitedByName ? ` · ${player.invitedBy === user.id ? 'senin' : `${displayName({ name: player.invitedByName, nickname: player.invitedByNickname })} getirdi`}` : ''}
+              </Text>
             ) : (
-              <Text style={styles.playerPosition} numberOfLines={1}>{realNameHint(player) ? `${realNameHint(player)} · ` : ''}{String(player.position || "Orta Saha")}</Text>
+              <Text style={styles.playerPosition} numberOfLines={1}>
+                {realNameHint(player) ? `${realNameHint(player)} · ` : ''}
+                {teamsDivided && player.status === 'ACTIVE' && matchRoleOf(player.id)
+                  ? ROLE_LABEL[matchRoleOf(player.id)!]
+                  : String(player.position || "Orta Saha")}
+              </Text>
             )}
             {(player.goals > 0 || (isCompleted && player.matchRating != null)) && (
               <Text style={{color: '#00E676', fontSize: 12, marginTop: 3, fontWeight: 'bold'}}>
@@ -805,6 +846,7 @@ export default function MatchDetailsScreen({ route, navigation }: any) {
 
       <ScrollView
         style={styles.container}
+        scrollEnabled={!scrollLocked}
         showsVerticalScrollIndicator={false}
         refreshControl={Platform.OS === 'web' ? undefined : <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#00E676" colors={["#00E676"]} />}
       >
@@ -1064,6 +1106,11 @@ export default function MatchDetailsScreen({ route, navigation }: any) {
                 teamB={teamB}
                 nameA={String(matchInfo.teamAName || 'A Takımı')}
                 nameB={String(matchInfo.teamBName || 'B Takımı')}
+                formationA={matchInfo.teamAFormation}
+                formationB={matchInfo.teamBFormation}
+                editable={lineupEditable}
+                onLineupChange={saveLineup}
+                onDragActive={setScrollLocked}
                 meId={user.id}
                 onPressPlayer={iPlayed ? (p: any) => { if (p.id !== user.id) openRatingModal(p); } : undefined}
               />
@@ -1071,12 +1118,12 @@ export default function MatchDetailsScreen({ route, navigation }: any) {
             <>
             <LinearGradient colors={['rgba(33, 150, 243, 0.15)', 'rgba(33, 150, 243, 0.02)']} style={styles.teamContainer}>
               <Text style={[styles.teamHeader, { color: '#2196F3' }]}>🔵 {String(matchInfo.teamAName || 'A Takımı').toLocaleUpperCase('tr-TR')} ({teamA.length})</Text>
-              {teamA.map((player, idx) => renderPlayerCard(player, idx, String(matchInfo.teamAName || 'A Takımı'), styles.teamABadge, styles.teamAText))}
+              {[...teamA].sort(bySlot(lineA)).map((player, idx) => renderPlayerCard(player, idx, String(matchInfo.teamAName || 'A Takımı'), styles.teamABadge, styles.teamAText))}
             </LinearGradient>
 
             <LinearGradient colors={['rgba(244, 67, 54, 0.15)', 'rgba(244, 67, 54, 0.02)']} style={styles.teamContainer}>
               <Text style={[styles.teamHeader, { color: '#F44336' }]}>🔴 {String(matchInfo.teamBName || 'B Takımı').toLocaleUpperCase('tr-TR')} ({teamB.length})</Text>
-              {teamB.map((player, idx) => renderPlayerCard(player, idx, String(matchInfo.teamBName || 'B Takımı'), styles.teamBBadge, styles.teamBText))}
+              {[...teamB].sort(bySlot(lineB)).map((player, idx) => renderPlayerCard(player, idx, String(matchInfo.teamBName || 'B Takımı'), styles.teamBBadge, styles.teamBText))}
             </LinearGradient>
             </>
             )}
